@@ -1,0 +1,10 @@
+WARNING: No libpcap provider available ! pcap won't be used
+[12:00:24] Reading FARAONIC (1M NORMAL rows)...
+[12:00:34]   1000000 records in 10.9s
+[12:00:34] Building windows (L=128, stride=16)...
+[12:00:37]   X=(62493, 128, 7)  62493 windows in 3.0s
+[12:00:37]   log_features: [3], ia_mean(log1p)=14.25
+[12:00:38]   Active: ['register_value_0', 'inter_arrival_ns'] (d_c=2)
+[12:00:38]   Split: train=43745 val=9373 test=9375
+[12:00:38]   Device: cuda | d=128, 4L, K=600, 200+300 ep, 1M rows
+[12:00:38] ================================================== STAGE 1: Trend (200 ep) ==================================================

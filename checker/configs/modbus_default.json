@@ -1,0 +1,134 @@
+{
+  "functions": {
+    "1": {
+      "name": "read_coils",
+      "request": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_coils", "field_type": "u16"}
+      ],
+      "response": [
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "coil_status", "field_type": "bytes", "length_from": "byte_count"}
+      ]
+    },
+    "2": {
+      "name": "read_discrete_inputs",
+      "request": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_inputs", "field_type": "u16"}
+      ],
+      "response": [
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "input_status", "field_type": "bytes", "length_from": "byte_count"}
+      ]
+    },
+    "3": {
+      "name": "read_holding_registers",
+      "request": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_registers", "field_type": "u16"}
+      ],
+      "response": [
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "register_values", "field_type": "bytes", "length_from": "byte_count"}
+      ]
+    },
+    "4": {
+      "name": "read_input_registers",
+      "request": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_registers", "field_type": "u16"}
+      ],
+      "response": [
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "input_registers", "field_type": "bytes", "length_from": "byte_count"}
+      ]
+    },
+    "5": {
+      "name": "write_single_coil",
+      "request": [
+        {"name": "output_address", "field_type": "u16"},
+        {"name": "output_value", "field_type": "u16", "enum_map": {"0": "OFF", "65280": "ON"}}
+      ],
+      "response": [
+        {"name": "output_address", "field_type": "u16"},
+        {"name": "output_value", "field_type": "u16"}
+      ]
+    },
+    "6": {
+      "name": "write_single_register",
+      "request": [
+        {"name": "register_address", "field_type": "u16"},
+        {"name": "register_value", "field_type": "u16"}
+      ],
+      "response": [
+        {"name": "register_address", "field_type": "u16"},
+        {"name": "register_value", "field_type": "u16"}
+      ]
+    },
+    "15": {
+      "name": "write_multiple_coils",
+      "request": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_outputs", "field_type": "u16"},
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "output_values", "field_type": "bytes", "length_from": "byte_count"}
+      ],
+      "response": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_outputs", "field_type": "u16"}
+      ]
+    },
+    "16": {
+      "name": "write_multiple_registers",
+      "request": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_registers", "field_type": "u16"},
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "register_values", "field_type": "bytes", "length_from": "byte_count"}
+      ],
+      "response": [
+        {"name": "starting_address", "field_type": "u16"},
+        {"name": "quantity_of_registers", "field_type": "u16"}
+      ]
+    },
+    "8": {
+      "name": "diagnostics",
+      "request": [
+        {"name": "sub_function", "field_type": "u16"},
+        {"name": "data", "field_type": "bytes"}
+      ],
+      "response": [
+        {"name": "sub_function", "field_type": "u16"},
+        {"name": "data", "field_type": "bytes"}
+      ]
+    },
+    "11": {
+      "name": "get_comm_event_counter",
+      "request": [],
+      "response": [
+        {"name": "status", "field_type": "u16"},
+        {"name": "event_count", "field_type": "u16"}
+      ]
+    },
+    "17": {
+      "name": "report_server_id",
+      "request": [],
+      "response": [
+        {"name": "byte_count", "field_type": "u8"},
+        {"name": "server_data", "field_type": "bytes", "length_from": "byte_count"}
+      ]
+    },
+    "43": {
+      "name": "encapsulated_interface_transport",
+      "request": [
+        {"name": "mei_type", "field_type": "u8"},
+        {"name": "mei_data", "field_type": "bytes"}
+      ],
+      "response": [
+        {"name": "mei_type", "field_type": "u8"},
+        {"name": "mei_data", "field_type": "bytes"}
+      ]
+    }
+  }
+}

@@ -1,0 +1,8 @@
+FARAONIC 500K + EarlyStopping: 2026-06-23 12:17:26
+[12:17:26] Reading FARAONIC (500K NORMAL)...
+[12:17:31]   500000 records
+[12:17:32]   31243 windows, active: ['register_value_0', 'inter_arrival_ns']
+[12:17:32]   Split: train=21870 val=4686 test=4687
+[12:17:32] STAGE 1: Trend (200 ep)
+[12:45:53]   Done 1701s  Loss: 0.6138->0.1239
+[12:45:53] STAGE 2: Diffusion (300 ep + EarlyStopping)
