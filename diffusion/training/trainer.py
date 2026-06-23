@@ -308,9 +308,9 @@ class MaskDDPMTrainer:
             history["train_loss_disc"].append(epoch_disc)
             history["train_loss_total"].append(epoch_total)
 
-            # --- Validation + Early Stopping ---
+            # --- Validation + Early Stopping (every 3 epochs) ---
             val_total = None
-            if val_loader is not None:
+            if val_loader is not None and (epoch + 1) % 3 == 0:
                 self.ddpm.eval()
                 self.mask_diff.eval()
                 val_cont_sum = 0.0
