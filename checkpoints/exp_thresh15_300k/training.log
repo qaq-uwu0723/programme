@@ -1,0 +1,50 @@
+[13:00:22] === TADS-ICS Training: exp_thresh15_300k ===
+[13:00:22]     2026-06-24 13:00:22
+[13:00:22] Loading CSV: dataset/FARAONIC/Modbus_TCP_ Cybersecurity_Dataset_Training.csv (max 300000 rows)
+[13:00:27]   18743 windows | 4.4s
+[13:00:27]   Active: ['inter_arrival_ns']
+[13:00:27]   Stub:   ['register_value_0', 'register_value_1', 'register_value_2', 'register_address', 'quantity']
+[13:00:27]   Det:    ['payload_size']
+[13:00:27]   Split: train=13120 val=2811 test=2812
+[13:00:27]   Config: batch=64 ep=300 d=128 K=600 device=cuda
+[13:00:27] --- STAGE 1: Trend ---
+[13:01:43] Trend epoch 20/200  loss=0.187014
+[13:02:56] Trend epoch 40/200  loss=0.168672
+[13:04:11] Trend epoch 60/200  loss=0.160252
+[13:05:25] Trend epoch 80/200  loss=0.154686
+[13:06:39] Trend epoch 100/200  loss=0.150827
+[13:07:53] Trend epoch 120/200  loss=0.147077
+[13:09:11] Trend epoch 140/200  loss=0.144147
+[13:10:28] Trend epoch 160/200  loss=0.141172
+[13:11:41] Trend epoch 180/200  loss=0.138241
+[13:12:57] Trend epoch 200/200  loss=0.135511
+[13:12:57]   751s | loss 0.7535->0.1355
+[13:12:57] --- STAGE 2: Diffusion ---
+[13:12:57] Computing trend predictions for training data...
+[13:16:47] Diff epoch 20/300  cont=0.232902  disc=0.080067  total=0.187051
+[13:20:37] Diff epoch 40/300  cont=0.219495  disc=0.075397  total=0.176266
+[13:24:34] Diff epoch 60/300  cont=0.215820  disc=0.075083  total=0.173599  val=0.159202
+[13:28:28] Diff epoch 80/300  cont=0.206416  disc=0.072806  total=0.166333
+[13:32:21] Diff epoch 100/300  cont=0.199958  disc=0.070971  total=0.161262
+[13:36:13] Diff epoch 120/300  cont=0.198259  disc=0.070505  total=0.159932  val=0.153835
+[13:40:04] Diff epoch 140/300  cont=0.195955  disc=0.070652  total=0.158364
+[13:43:57] Diff epoch 160/300  cont=0.198309  disc=0.071448  total=0.160251
+[13:47:47] Diff epoch 180/300  cont=0.196616  disc=0.070478  total=0.158775  val=0.152403
+[13:48:54] Early stopping at epoch 186 (best: 126, val_loss=0.148906)
+[13:48:54] Restored best model from epoch 126 (val_loss=0.148906)
+[13:48:54]   2157s (35.9min) | 186 epochs
+[13:48:54]   cont: 0.5252->0.1930
+[13:48:54]   disc: 0.8946->0.0708
+[13:48:54]   val: 0.237770->0.151086 | best=0.148236 @ ep48
+[13:48:54] -- Model saved --
+[13:48:56] --- Evaluation ---
+[13:49:00] KS  Train=0.1276  Test=0.1121  Ratio=0.88  NO OVERFIT
+[13:49:00] Max KS: 0.5797 | JSD Train=0.0658 Test=0.0533
+[13:49:00]   register_value_0     Train KS=0.1058  Test KS=0.0391
+[13:49:00]   register_value_1     Train KS=0.0000  Test KS=0.0000
+[13:49:00]   register_value_2     Train KS=0.0000  Test KS=0.0000
+[13:49:00]   inter_arrival_ns     Train KS=0.2395  Test KS=0.1572
+[13:49:00]   payload_size         Train KS=0.5280  Test KS=0.5797
+[13:49:00]   register_address     Train KS=0.0000  Test KS=0.0000
+[13:49:00]   quantity             Train KS=0.0200  Test KS=0.0091
+[13:49:00] === DONE ===
