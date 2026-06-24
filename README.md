@@ -13,9 +13,8 @@ Based on: [Mask-DDPM: A Two-Stage Hybrid Diffusion Framework for ICS Data Genera
 ├── diffusion/          Core model: TransformerTrend, DDPM, Masked Diffusion, TypeRouter
 ├── assembler/          Tensors → scappy Modbus/TCP PCAP + JSONL sidecar
 ├── checker/            4-layer protocol validator (frame → TCP → Modbus → transaction)
-├── experiments/        Training scripts, experiment log, monitor
-├── checkpoints/        Trained model weights (multiple experiment runs)
-├── docs/               Development log, code summary, design docs, paper notes
+├── experiments/        experiment log, monitor
+├── docs/               Development log, code summary(coming soon)
 └── requirements.txt
 ```
 
