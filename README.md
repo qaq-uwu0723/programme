@@ -73,8 +73,6 @@ Python 3.10+, PyTorch 2.12+ (CUDA recommended), numpy, scipy, scapy
 | V2.8.2 thresh15 | 0.11 | Low-card threshold 10→15, register_value_0 KS→0.04 |
 | **V2.8.3** | **0.075** | **3D PayloadLookup + Min-SNR weighting** |
 
-Protocol validity: 100%. Detailed results → `docs/DEVELOPMENT_LOG.md` and `experiments/EXPERIMENT_LOG.md`.
+Protocol validity: 100%. Detailed results → [docs/DEVELOPMENT_LOG.md](docs/DEVELOPMENT_LOG.md) and [experiments/EXPERIMENT_LOG.md](experiments/EXPERIMENT_LOG.md).
 
-## Detail Info
-[Training result](experiments/EXPERIMENT_LOG.md)&
-[Developing process](docs/DEVELOPMENT_LOG.md)
+
