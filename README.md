@@ -76,5 +76,5 @@ Python 3.10+, PyTorch 2.12+ (CUDA recommended), numpy, scipy, scapy
 Protocol validity: 100%. Detailed results → `docs/DEVELOPMENT_LOG.md` and `experiments/EXPERIMENT_LOG.md`.
 
 ## Detail Info
-[Training result](experiments/EXPERIMENT_LOG.md)
+[Training result](experiments/EXPERIMENT_LOG.md)   
 [Developing process](docs/DEVELOPMENT_LOG.md)
