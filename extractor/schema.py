@@ -86,7 +86,7 @@ class FeatureSchema:
             elif spec.kind == FeatureKind.CONTINUOUS and spec.var_type == VariableType.TYPE4:
                 if stds[i] < dead_threshold:
                     new_spec.var_type = VariableType.TYPE6  # dead → stub
-                elif cardinality[i] < 10:
+                elif cardinality[i] < 15:
                     new_spec.var_type = VariableType.TYPE6  # low-cardinality → stub (not suitable for Gaussian DDPM)
             new_cont.append(new_spec)
 

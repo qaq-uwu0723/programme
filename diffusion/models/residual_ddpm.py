@@ -3,14 +3,15 @@
 ResidualDDPM models R = X - S via:
 - Forward: r_k = sqrt(alpha_bar_k)*r_0 + sqrt(1-alpha_bar_k)*epsilon
 - Reverse: denoiser predicts epsilon, DDPM update step
-- Optional Min-SNR weighting for training stability
+- Min-SNR weighting for training stability (gamma=5.0)
 """
-from typing import Tuple
+from typing import Tuple, Optional
 import torch
 import torch.nn as nn
 
 from .denoiser import TransformerDenoiser
 from ..utils.noise_schedule import make_beta_schedule, get_alpha_bars
+from ..training.losses import weighted_epsilon_mse
 
 
 class ResidualDDPM(nn.Module):
@@ -32,10 +33,14 @@ class ResidualDDPM(nn.Module):
         beta_schedule: str = "cosine",
         beta_start: float = 1e-4,
         beta_end: float = 0.02,
+        use_min_snr: bool = True,
+        snr_gamma: float = 5.0,
     ):
         super().__init__()
         self.d_c = d_c
         self.K = diffusion_steps
+        self.use_min_snr = use_min_snr
+        self.snr_gamma = snr_gamma
 
         # Noise schedule
         self.register_buffer("betas", make_beta_schedule(
@@ -93,7 +98,10 @@ class ResidualDDPM(nn.Module):
         r_k, eps = self.forward_noise(r0, k)
         h = self.denoiser(r_k, k, s_cond)
         eps_pred = self.output_head(h)
-        loss = nn.functional.mse_loss(eps_pred, eps)
+        if self.use_min_snr:
+            loss = weighted_epsilon_mse(eps_pred, eps, k, self.alpha_bars, self.snr_gamma)
+        else:
+            loss = nn.functional.mse_loss(eps_pred, eps)
         return loss, k, eps_pred
 
     @torch.no_grad()

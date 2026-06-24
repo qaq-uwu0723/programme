@@ -74,16 +74,17 @@ class StubSampler:
 class PayloadLookup:
     """Conditional payload_size distribution lookup.
 
-    Builds a mapping from (function_code, direction) → list of payload values
-    observed in the training data. During sampling, for each generated
-    (function_code, direction), we randomly sample from the corresponding list
-    to produce a realistic payload_size distribution.
+    Builds a mapping from (function_code, direction, quantity) → list of payload
+    values observed in the training data. During sampling, for each generated
+    (function_code, direction, quantity), we randomly sample from the
+    corresponding list to produce a realistic payload_size distribution.
 
-    This replaces the previous approach of using 3 fixed values (12/28/15).
+    quantity is included because Modbus payload size depends on register count:
+    e.g. FC3 response = 3 + quantity × 2 bytes.
     """
 
     def __init__(self):
-        self._table: Dict[Tuple[int, int], List[float]] = {}
+        self._table: Dict[Tuple[int, int, int], List[float]] = {}
 
     def fit(
         self,
@@ -105,25 +106,29 @@ class PayloadLookup:
         if Y_disc.ndim == 3:
             Y_disc = Y_disc.reshape(-1, Y_disc.shape[-1])
 
-        # Column indices: D_FUNCTION_CODE=0, D_DIRECTION=1
-        payload_idx = 4  # C_PAYLOAD_SIZE
+        payload_idx = 4   # C_PAYLOAD_SIZE
+        quantity_idx = 6   # C_QUANTITY
         for i in range(Y_disc.shape[0]):
             fc_idx = int(Y_disc[i, 0])
             if fc_idx >= len(fc_vocab):
                 continue
             fc = fc_vocab[fc_idx]
-            direction = int(Y_disc[i, 1])  # 0=c2s, 1=s2c
-            key = (fc, direction)
+            direction = int(Y_disc[i, 1])
+            quantity = int(X_cont[i, quantity_idx])
+            key = (fc, direction, quantity)
             ps = float(X_cont[i, payload_idx])
             self._table.setdefault(key, []).append(ps)
         return self
 
-    def sample(self, fc: torch.Tensor, direction: torch.Tensor) -> torch.Tensor:
-        """Sample payload_size given function_code and direction.
+    def sample(
+        self, fc: torch.Tensor, direction: torch.Tensor, quantity: torch.Tensor
+    ) -> torch.Tensor:
+        """Sample payload_size given function_code, direction, and quantity.
 
         Args:
             fc: (B, L) function code values (actual codes, not vocab indices)
             direction: (B, L) direction (0=c2s, 1=s2c)
+            quantity: (B, L) quantity values (register count)
 
         Returns:
             payload: (B, L) sampled payload values in raw units
@@ -132,26 +137,55 @@ class PayloadLookup:
         shape = fc.shape
         payload = torch.zeros(shape, device=device, dtype=torch.float32)
 
-        # Build unique key → sampled cache for efficiency
         unique_keys = set()
         for b in range(shape[0]):
             for t in range(shape[1]):
-                key = (int(fc[b, t].item()), int(direction[b, t].item()))
+                key = (
+                    int(fc[b, t].item()),
+                    int(direction[b, t].item()),
+                    int(quantity[b, t].item()),
+                )
                 unique_keys.add(key)
 
-        cache: Dict[Tuple[int, int], float] = {}
+        cache: Dict[Tuple[int, int, int], float] = {}
         for key in unique_keys:
             if key in self._table and len(self._table[key]) > 0:
                 cache[key] = float(np.random.choice(self._table[key]))
             else:
-                cache[key] = 12.0  # fallback: standard FC3 request
+                # fallback: infer from protocol rules when lookup misses
+                fc_val, direction_val, qty_val = key
+                if not hasattr(self, '_fallback_cache'):
+                    self._fallback_cache = {}
+                if key not in self._fallback_cache:
+                    self._fallback_cache[key] = self._compute_fallback(
+                        fc_val, direction_val, qty_val
+                    )
+                cache[key] = self._fallback_cache[key]
 
         for b in range(shape[0]):
             for t in range(shape[1]):
-                key = (int(fc[b, t].item()), int(direction[b, t].item()))
-                payload[b, t] = cache.get(key, 12.0)
+                key = (
+                    int(fc[b, t].item()),
+                    int(direction[b, t].item()),
+                    int(quantity[b, t].item()),
+                )
+                payload[b, t] = cache[key]
 
         return payload
+
+    @staticmethod
+    def _compute_fallback(fc: int, direction: int, quantity: int) -> float:
+        """Protocol-aware fallback when no matching sample exists in training data."""
+        if direction == 0:  # request
+            if fc in (1, 2, 3, 4):     return 6.0   # read: MBAP(7) + func(1) + addr(2) + qty(2) = 12 → wait, ADU only
+            if fc in (5, 6):            return 6.0   # write single
+            if fc in (15, 16):          return 7.0 + quantity * 2  # write multiple
+            return 6.0
+        else:  # response
+            if fc in (1, 2, 3, 4):      return 3.0 + quantity * 2  # read response: func(1) + byte_count(1) + regs(qty*2)
+            if fc in (5, 6):            return 6.0   # write single ack
+            if fc in (15, 16):          return 6.0   # write multiple ack
+            return 6.0
 
 
 class MaskDDPMSampler:
@@ -224,17 +258,35 @@ class MaskDDPMSampler:
         # --- Step 5: Reconstruct full feature vector (all d_c features) ---
         X_hat_norm_full = self._build_full_tensor(X_active_norm, active_mask, B, self.L, device)
 
-        # --- Step 6: Fill Type5 (payload_size) deterministically in z-scored space ---
-        X_hat_norm_full = self._fill_payload_size(X_hat_norm_full, Y_hat, device)
+        # --- Step 6: Fill quantity (Type6, needed for payload_size lookup) ---
+        quantity_idx = 6
+        quantity_raw = None
+        if self.stub_sampler is not None and quantity_idx in self.stub_sampler._indices:
+            shape = (B, self.L)
+            quantity_raw = self.stub_sampler.sample(quantity_idx, shape).to(device)
+            # Put quantity into z-scored space for consistency
+            mean_q = self.normalizer.mean[quantity_idx]
+            std_q = self.normalizer.std[quantity_idx]
+            X_hat_norm_full[:, :, quantity_idx] = (quantity_raw.float() - mean_q) / std_q.clamp(min=1e-8)
+        else:
+            # fallback: denormalize whatever is there (DDPM-generated)
+            mean_q = self.normalizer.mean[quantity_idx]
+            std_q = self.normalizer.std[quantity_idx]
+            quantity_raw = X_hat_norm_full[:, :, quantity_idx] * std_q + mean_q
 
-        # --- Step 7: Denormalize all features together ---
+        # --- Step 7: Fill Type5 (payload_size) using (fc, direction, quantity) ---
+        X_hat_norm_full = self._fill_payload_size(
+            X_hat_norm_full, Y_hat, quantity_raw, device
+        )
+
+        # --- Step 8: Denormalize all features together ---
         X_hat = self.normalizer.inverse_transform(X_hat_norm_full)
 
-        # --- Step 8: Fill Type6 stub features with empirical samples ---
+        # --- Step 9: Fill remaining Type6 stub features (skip quantity = already filled) ---
         if self.stub_sampler is not None:
-            X_hat = self._fill_stub_features(X_hat, device)
+            X_hat = self._fill_stub_features(X_hat, device, skip_indices={6})
 
-        # --- Step 8b: Inverse log transform for log1p-compressed features ---
+        # --- Step 9b: Inverse log transform for log1p-compressed features ---
         X_hat = self._inverse_log_transform(X_hat)
 
         # --- Step 9: Clamp to valid ranges ---
@@ -256,12 +308,16 @@ class MaskDDPMSampler:
                 X_hat[:, :, idx] = torch.expm1(X_hat[:, :, idx])
         return X_hat
 
-    def _fill_stub_features(self, X_hat: torch.Tensor, device: torch.device) -> torch.Tensor:
+    def _fill_stub_features(self, X_hat: torch.Tensor, device: torch.device,
+                            skip_indices: set = None) -> torch.Tensor:
         """Replace low-cardinality / dead features with empirical samples."""
         if self.stub_sampler is None:
             return X_hat
+        skip = skip_indices or set()
         shape = (X_hat.shape[0], X_hat.shape[1])
         for i in self.stub_sampler._indices:
+            if i in skip:
+                continue
             X_hat[:, :, i] = self.stub_sampler.sample(i, shape).to(device)
         return X_hat
 
@@ -291,23 +347,22 @@ class MaskDDPMSampler:
         return X_full
 
     def _fill_payload_size(
-        self, X_hat: torch.Tensor, Y_hat: List[torch.Tensor], device: torch.device,
+        self, X_hat: torch.Tensor, Y_hat: List[torch.Tensor],
+        quantity: torch.Tensor, device: torch.device,
     ) -> torch.Tensor:
         """Overwrite payload_size (index 4) using conditional sampling.
 
         Samples from the empirical distribution of payload_size conditioned on
-        (function_code, direction), built from training data by PayloadLookup.
-        If no lookup table is available, falls back to the old fixed-value logic."""
+        (function_code, direction, quantity). quantity is pre-filled from
+        StubSampler to ensure consistency with the protocol."""
         FC_VOCAB = [1, 2, 3, 4, 5, 6, 8, 11, 15, 16, 17, 43]
         func_idx = Y_hat[0].long()
         fc = torch.tensor(FC_VOCAB, device=device)[func_idx.clamp(0, 11)]
         direction = Y_hat[1]
 
         if self.payload_lookup is not None:
-            # --- Conditional sampling from training distribution ---
-            payload_raw = self.payload_lookup.sample(fc, direction)
+            payload_raw = self.payload_lookup.sample(fc, direction, quantity)
         else:
-            # --- Fallback: fixed values (legacy behaviour) ---
             is_request = (direction == 0)
             payload_raw = torch.full_like(fc, 12.0, dtype=torch.float32)
             payload_raw = torch.where((fc == 3) & ~is_request, 28.0, payload_raw)

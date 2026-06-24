@@ -7,6 +7,7 @@ from typing import List, Optional, Dict, Any
 from pathlib import Path
 import torch
 import torch.nn as nn
+from torch.amp import autocast, GradScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 from ..config import DiffusionConfig
@@ -95,6 +96,8 @@ class MaskDDPMTrainer:
             beta_schedule=config.ddpm.beta_schedule,
             beta_start=config.ddpm.beta_start,
             beta_end=config.ddpm.beta_end,
+            use_min_snr=config.ddpm.use_min_snr,
+            snr_gamma=config.ddpm.snr_gamma,
         ).to(device)
 
         self.mask_diff = MaskedDiffusion(
@@ -129,6 +132,7 @@ class MaskDDPMTrainer:
         self,
         train_data: torch.Tensor,
         val_data: Optional[torch.Tensor] = None,
+        log_fn: callable = None,
     ) -> Dict[str, Any]:
         """Stage 1: Train TransformerTrend with next-step MSE prediction.
 
@@ -152,6 +156,7 @@ class MaskDDPMTrainer:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.trend_optimizer, factor=0.5, patience=20
         )
+        scaler = GradScaler("cuda")
 
         history = {"train_loss": [], "val_loss": []}
 
@@ -161,10 +166,13 @@ class MaskDDPMTrainer:
             for (batch,) in loader:
                 batch = batch.to(self.device)
                 self.trend_optimizer.zero_grad()
-                loss = self.trend_model.compute_loss(batch)
-                loss.backward()
+                with autocast("cuda"):
+                    loss = self.trend_model.compute_loss(batch)
+                scaler.scale(loss).backward()
+                scaler.unscale_(self.trend_optimizer)
                 torch.nn.utils.clip_grad_norm_(self.trend_model.parameters(), 1.0)
-                self.trend_optimizer.step()
+                scaler.step(self.trend_optimizer)
+                scaler.update()
                 epoch_loss += loss.item() * batch.size(0)
 
             epoch_loss /= len(train_data)
@@ -179,8 +187,14 @@ class MaskDDPMTrainer:
             else:
                 scheduler.step(epoch_loss)
 
+            torch.cuda.empty_cache()  # release idle cached memory back to OS
+
             if (epoch + 1) % 20 == 0:
-                print(f"Trend epoch {epoch+1}/{cfg.epochs}  loss={epoch_loss:.6f}")
+                msg = f"Trend epoch {epoch+1}/{cfg.epochs}  loss={epoch_loss:.6f}"
+                if log_fn:
+                    log_fn(msg)
+                else:
+                    print(msg, flush=True)
 
         return history
 
@@ -194,6 +208,7 @@ class MaskDDPMTrainer:
         train_y: List[torch.Tensor],
         val_x: Optional[torch.Tensor] = None,
         val_y: Optional[List[torch.Tensor]] = None,
+        log_fn: callable = None,
     ) -> Dict[str, Any]:
         """Stage 2: Joint training of ResidualDDPM + MaskedDiffusion.
 
@@ -219,30 +234,42 @@ class MaskDDPMTrainer:
         for p in self.trend_model.parameters():
             p.requires_grad_(False)
 
-        # Precompute trend and residuals — batched to avoid OOM on large datasets
-        print("Computing trend predictions for training data...")
+        # Precompute trend and residuals — batched on GPU, then moved to CPU
+        msg = "Computing trend predictions for training data..."
+        if log_fn:
+            log_fn(msg)
+        else:
+            print(msg, flush=True)
         S_hat_train = []
         batch_size = 256
         with torch.no_grad():
             for i in range(0, len(train_x), batch_size):
                 batch = train_x[i:i+batch_size].to(self.device)
                 S_hat_train.append(self.trend_model(batch))
-        S_hat_train = torch.cat(S_hat_train, dim=0)
-        R_train = train_x.to(self.device) - S_hat_train  # residuals
+        S_hat_train = torch.cat(S_hat_train, dim=0)        # GPU
+        R_train = train_x - S_hat_train                      # GPU
+        # Move to CPU for TensorDataset (avoids keeping full dataset on GPU)
+        S_hat_train = S_hat_train.cpu()
+        R_train = R_train.cpu()
 
-        # Precompute validation residuals if validation data provided
+        # Precompute validation residuals — compute on GPU, move to CPU
         val_loader = None
         if val_x is not None and val_y is not None:
-            val_x = self._slice_active(val_x).to(self.device)
-            val_y = [y.to(self.device) for y in val_y]
+            val_x = self._slice_active(val_x)                # GPU (from caller)
             with torch.no_grad():
                 S_hat_val = self.trend_model(val_x)
-            R_val = val_x - S_hat_val
-            val_dataset = TensorDataset(R_val, S_hat_val, *val_y)
+            R_val = val_x - S_hat_val                        # GPU
+            # Move to CPU for TensorDataset
+            val_x_cpu = val_x.cpu()
+            S_hat_val = S_hat_val.cpu()
+            R_val = R_val.cpu()
+            val_y_cpu = [y.cpu() if y.is_cuda else y for y in val_y]
+            val_dataset = TensorDataset(R_val, S_hat_val, *val_y_cpu)
             val_loader = DataLoader(val_dataset, batch_size=cfg.ddpm.batch_size, shuffle=False)
 
-        # Build datasets
-        train_dataset = TensorDataset(R_train, S_hat_train, *[y.to(self.device) for y in train_y])
+        # Build training dataset — on CPU; batches moved to GPU inside training loop
+        train_y_cpu = [y.cpu() if y.is_cuda else y for y in train_y]
+        train_dataset = TensorDataset(R_train, S_hat_train, *train_y_cpu)
         train_loader = DataLoader(
             train_dataset, batch_size=cfg.ddpm.batch_size, shuffle=True
         )
@@ -255,6 +282,7 @@ class MaskDDPMTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.diffusion_optimizer, T_0=50, T_mult=2
         )
+        scaler = GradScaler("cuda")
 
         history = {"train_loss_cont": [], "train_loss_disc": [], "train_loss_total": [],
                    "val_loss_total": []}
@@ -279,19 +307,18 @@ class MaskDDPMTrainer:
 
                 B = r0.size(0)
 
-                # Continuous: DDPM forward
-                loss_cont, k, eps_pred = self.ddpm(r0, s_hat)
-
-                # Discrete: Mask forward (condition on S_hat + X_hat from trend)
-                # X_hat = S_hat (trend only; during training we don't have residuals yet)
-                loss_disc = self.mask_diff(y_list, s_hat, x_hat=s_hat)
-
-                total = loss_cont * lambda_bal + loss_disc * (1.0 - lambda_bal)
+                # Continuous + Discrete forward with AMP
+                with autocast("cuda"):
+                    loss_cont, k, eps_pred = self.ddpm(r0, s_hat)
+                    loss_disc = self.mask_diff(y_list, s_hat, x_hat=s_hat)
+                    total = loss_cont * lambda_bal + loss_disc * (1.0 - lambda_bal)
 
                 self.diffusion_optimizer.zero_grad()
-                total.backward()
+                scaler.scale(total).backward()
+                scaler.unscale_(self.diffusion_optimizer)
                 torch.nn.utils.clip_grad_norm_(params, 1.0)
-                self.diffusion_optimizer.step()
+                scaler.step(self.diffusion_optimizer)
+                scaler.update()
                 self.ddpm_ema.update()
 
                 epoch_cont += loss_cont.item() * B
@@ -300,6 +327,8 @@ class MaskDDPMTrainer:
                 n_samples += B
 
             scheduler.step()
+
+            torch.cuda.empty_cache()  # release idle cached memory back to OS
 
             epoch_cont /= n_samples
             epoch_disc /= n_samples
@@ -346,8 +375,12 @@ class MaskDDPMTrainer:
                     patience_counter += 1
 
                 if patience_counter >= patience:
-                    print(f"\nEarly stopping at epoch {epoch+1} (best: {best_epoch+1}, "
-                          f"val_loss={best_val_loss:.6f})")
+                    msg = (f"Early stopping at epoch {epoch+1} (best: {best_epoch+1}, "
+                           f"val_loss={best_val_loss:.6f})")
+                    if log_fn:
+                        log_fn(msg)
+                    else:
+                        print(msg, flush=True)
                     break
 
                 self.ddpm.train()
@@ -355,18 +388,24 @@ class MaskDDPMTrainer:
 
             if (epoch + 1) % 20 == 0:
                 val_str = f"  val={val_total:.6f}" if val_total is not None else ""
-                print(
-                    f"Diff epoch {epoch+1}/{cfg.ddpm.epochs}  "
-                    f"cont={epoch_cont:.6f}  disc={epoch_disc:.6f}  "
-                    f"total={epoch_total:.6f}{val_str}"
-                )
+                msg = (f"Diff epoch {epoch+1}/{cfg.ddpm.epochs}  "
+                       f"cont={epoch_cont:.6f}  disc={epoch_disc:.6f}  "
+                       f"total={epoch_total:.6f}{val_str}")
+                if log_fn:
+                    log_fn(msg)
+                else:
+                    print(msg, flush=True)
 
         # Restore best model if early stopping was triggered
         if best_state is not None and best_epoch < cfg.ddpm.epochs - 1:
             self.ddpm.load_state_dict(best_state["ddpm"])
             self.mask_diff.load_state_dict(best_state["mask"])
-            print(f"Restored best model from epoch {best_epoch+1} "
-                  f"(val_loss={best_val_loss:.6f})")
+            msg = (f"Restored best model from epoch {best_epoch+1} "
+                   f"(val_loss={best_val_loss:.6f})")
+            if log_fn:
+                log_fn(msg)
+            else:
+                print(msg, flush=True)
 
         return history
 
