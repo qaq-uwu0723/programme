@@ -27,14 +27,14 @@ PCAP/CSV → Extractor → Diffusion Model → Assembler → Checker
 
 ## Quick Start
 
-### 训练（通用入口：支持 CSV / PCAP）
+### 训练
 
 ```bash
-# 从 CSV 训练（FARAONIC 数据集）
-python experiments/run_experiment.py --name exp01 --csv dataset/FARAONIC/Modbus_TCP_ Cybersecurity_Dataset_Training.csv --csv-rows 500000 --output checkpoints/exp01/ --epochs 300 --batch-size 64
+# 从 CSV 训练
+python experiments/run_experiment.py --name exp01 --csv your_data.csv --csv-rows 500000 --output checkpoints/exp01/ --epochs 300 --batch-size 64
 
-# 从 PCAP 训练（原始抓包）
-python experiments/run_experiment.py --name exp02 --pcap dataset/ICS_PACPS/clean/traffic.pcap --output checkpoints/exp02/ --epochs 300 --batch-size 64
+# 从 PCAP 训练
+python experiments/run_experiment.py --name exp02 --pcap traffic.pcapng --output checkpoints/exp02/ --epochs 300 --batch-size 64
 ```
 
 ### 监控
