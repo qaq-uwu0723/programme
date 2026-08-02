@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Virtualenv
+.venv/
+venv/
+env/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Data / checkpoints / outputs (large, regenerable)
+checkpoints/
+dataset/
+generated/
+traces/
+output/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Reports
+*.log
+eval_report.json

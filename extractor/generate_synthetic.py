@@ -166,6 +166,7 @@ def generate_traffic(
 
             # --- Request ---
             if fc == 3:
+                qty = min(3, qty)  # only 3 synthetic registers available
                 payload = _build_read_req(txid, unit_id, addr, qty)
             elif fc == 6:
                 addr = random.choice(addr_pool[:3])
@@ -199,7 +200,7 @@ def generate_traffic(
             if fc == 3:
                 reg_values = process.register_values()
                 vals = struct.pack(">HHH", *reg_values)[:qty * 2]
-                payload = _build_read_resp(txid, unit_id, qty * 2, vals)
+                payload = _build_read_resp(txid, unit_id, len(vals), vals)
             elif fc == 6:
                 payload = _build_write_single_resp(txid, unit_id, addr, t_val)
             elif fc == 16:

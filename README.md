@@ -30,28 +30,31 @@ PCAP/CSV → Extractor → Diffusion Model → Assembler → Checker
 ### 训练
 
 ```bash
-# 从 CSV 训练
-python experiments/run_experiment.py --name exp01 --csv your_data.csv --csv-rows 500000 --output checkpoints/exp01/ --epochs 300 --batch-size 64
-
-# 从 PCAP 训练
-python experiments/run_experiment.py --name exp02 --pcap traffic.pcapng --output checkpoints/exp02/ --epochs 300 --batch-size 64
+# 1M 行 / 6 标签混合训练（FARAONIC，~2.4h）
+.venv/Scripts/python.exe tests/train_1m.py
 ```
 
 ### 监控
 
 ```bash
 python experiments/monitor_v2.py                                    # 自动找最新 log
-python experiments/monitor_v2.py checkpoints/exp01/training.log     # 指定 log
+python experiments/monitor_v2.py checkpoints/exp_1m_type4/training.log   # 指定 log
 ```
 
 ### 生成 & 校验
 
 ```bash
-# 打包（扩散输出 → PCAP + JSONL）
-python -m assembler --model checkpoints/exp01/ --output output/exp01/ --count 100
+# 生成（扩散输出 → 特征张量）
+python -m diffusion sample --model checkpoints/exp_1m_type4/ --output generated/ --num-windows 100 --temperature 1.0
+
+# 打包（张量 → PCAP + JSONL，自动注入响应保证请求-响应配对）
+python -m assembler --data generated/ --output traces/
 
 # 校验
-python -m checker output/exp01/
+python -m checker traces/gen-trace-001.pcapng traces/gen-trace-001.meta.jsonl --output traces/report.json
+
+# 统计评估（KS/JSD）
+.venv/Scripts/python.exe tests/eval_v30_metrics.py
 ```
 
 ## Requirements

@@ -40,6 +40,19 @@ def packet_to_features(
     if schema is None:
         schema = FeatureSchema.default_modbus()
 
+    # Guard: this function maps fields by hardcoded column positions matching
+    # FeatureSchema.default_modbus(). Fail loudly rather than silently writing
+    # values to the wrong columns if a non-default schema is passed.
+    _EXPECTED_CONT = [s.name for s in FeatureSchema.default_modbus().continuous]
+    _EXPECTED_DISC = [s.name for s in FeatureSchema.default_modbus().discrete]
+    actual_cont = [s.name for s in schema.continuous]
+    actual_disc = [s.name for s in schema.discrete]
+    if actual_cont != _EXPECTED_CONT or actual_disc != _EXPECTED_DISC:
+        raise ValueError(
+            "packet_to_features requires the default_modbus schema layout; got "
+            f"continuous={actual_cont}, discrete={actual_disc}"
+        )
+
     N = len(records)
     d_c = schema.d_c
     d_d = schema.d_d
@@ -110,6 +123,14 @@ def build_windows(
     N = X_cont.shape[0]
     d_c = X_cont.shape[1]
     d_d = Y_disc.shape[1]
+    stride = max(1, int(stride))
+
+    if N < 1:
+        # Empty input: return zero-length windows matching the feature dims
+        num_windows = 0
+        X_w = np.zeros((num_windows, window_length, d_c), dtype=np.float32)
+        Y_w = [np.zeros((num_windows, window_length), dtype=np.int64) for _ in range(d_d)]
+        return X_w, Y_w
 
     if N < window_length:
         # Pad with repetition if too short

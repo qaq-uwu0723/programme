@@ -332,18 +332,42 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 
 | 特征 | KS | 特征 | JSD |
 |------|:---:|------|:---:|
-| register_value_0 | 0.002 | function_code | 0.157 |
-| register_value_1/2 | 0.000 | direction | 0.085 |
-| inter_arrival_ns | **0.011** | unit_id | 0.119 |
+| register_value_0 | 0.002 | function_code | 0.018 |
+| register_value_1/2 | 0.000 | direction | 0.004 |
+| inter_arrival_ns | **0.49**† | unit_id | 0.001 |
 | payload_size | **0.613** | is_exception | 0.000 |
 | register_address | 0.001 | exception_code | 0.000 |
-| quantity | 0.027 | Mean JSD (5 learned) | **0.072** |
+| quantity | 0.027 | Mean JSD (5 learned) | **0.0045** |
 
-**Mean KS=0.093, Max KS=0.613**。payload_size 为唯一瓶颈（DDPM 架构限制，KS 0.613 拖高均值；排除后其余连续特征 Mean KS≈0.008 历史最佳）。inter_arrival 经验路由成效显著（0.202→0.011）。
+> † inter_arrival KS 0.49 为 MQ2 取舍——排除 48.7% 会话间隙伪影（20 天）换取协议配对完美；真实亚秒级间隔保留。
 
-**端到端确认**（50 窗口 → 6400 包 → 校验）：管线全通，协议层零错误，仅 MQ1/MQ2 伪影 finding。
+**Mean KS=0.163, Max KS=0.613**。payload_size（0.61）+ inter_arrival（0.49，MQ2 取舍）为瓶颈；离散保真历史最佳（JSD=0.0045）。
 
-**管线最终状态**：5 阶段（训练/生成/组装/校验/评估）全部回环测试通过。已知限制 5 项（payload_size KS、disc 收敛、txid 统计失真、MQ1 方向偏向、MQ2 20 天间隙）均已文档化。
+**协议有效性（最终）**：checker 报告 **0 findings**（16974 包，含 assembler 注入的配对响应）——温度采样（direction 87/13→65/35）+ 响应注入保证配对 + 丢弃孤儿响应。
+
+**端到端确认**：生成 → 组装 → 校验全链路零协议错误。
+
+**管线最终状态**：5 阶段（训练/生成/组装/校验/评估）全部回环测试通过。已知限制 4 项（payload_size KS、disc 收敛、txid 统计失真、inter_arrival 取舍）均已文档化。
+
+---
+
+### [2026-08-02] V3.0 后 — 综合修复收尾（MQ1/MQ2 + 项目复核）
+
+**MQ1 方向偏向**（MaskedDiffusion 多数类膨胀 87/13）：
+- `masked_diffusion.py`：`sample()` 从 greedy argmax 改为 **temperature 采样**（`--temperature`，默认 1.0），direction 87/13 → 65/35
+- `assembler/packet_builder.py`：**响应注入保证配对**——对每个未应答请求注入响应（echo txid/unit_id/fc），并丢弃孤儿响应（无对应请求的 s2c）
+
+**MQ2 inter_arrival 会话间隙**（48.7% 为 20 天会话拼接伪影）：
+- `backfill_v30.py` / `train_1m.py`：经验采样前**排除 >1s 伪影间隙**（此前 >10s 仍留 9.8s 间隙导致中途超时）
+
+**项目复核修复**：
+- 删除 5 个引用已废弃 PayloadLookup 的陈旧脚本（`run_experiment.py` 等，import 即崩）
+- `train_1m.py` 重训路径补 inter_arrival 排除（此前缺失，重训会复现伪影）
+- 新建 `.gitignore`（.venv/checkpoints/dataset/generated/traces/__pycache__）
+- README 训练入口更新（run_experiment → train_1m）
+- `eval_1m_ckpt.py` 陈旧钳位 clip(max=80) 改用 log_bounds
+
+**最终验证**：checker **0 findings**（16974 包），离散 JSD=0.0045，全部 24 生产模块导入通过。
 
 ---
 
@@ -380,7 +404,10 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 - [x] metadata expected_fields 按 (fc,direction) 映射——V3.0 后
 - [x] checker L21/M6/L13/M7/H6/M9/L11 修复——V3.0 后
 - [x] 端到端管线全通（生成→组装→校验→评估，协议层零错误）——V3.0 后
-- [x] V3.0 统计评估（Mean KS=0.093, JSD=0.072, inter_arrival KS=0.011）——V3.0 后
+- [x] MQ1 方向偏向（温度采样 + assembler 配对保证）——V3.0 后
+- [x] MQ2 inter_arrival 会话间隙（排除 >1s 伪影）——V3.0 后
+- [x] 陈旧 PayloadLookup 脚本清理 + .gitignore——V3.0 后
+- [x] V3.0 最终评估（Mean KS=0.163, JSD=0.0045, checker 0 findings）——V3.0 后
 
 ### 待解决
 
@@ -389,8 +416,7 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 | 1 | DDPM 条件向量不含离散特征，payload_size 只能学边缘分布（KS=0.613） | 将 fc/direction 注入 DDPM 的 d_cond（架构改造，不纳入当前范围） |
 | 2 | disc loss 0.443 未完全收敛（d_model=128 欠拟合） | 扩展 d_model 256/512 或继续训练；数据修复后收敛已改善（6.5%/200ep vs 4.7%/500ep） |
 | 3 | transaction_id 生成崩溃至 0 和 255（JSD 统计失真） | sampler 层面随机 override 0..65535 已规避；彻底解决需评估 MaskedDiffusion 均匀类权重 |
-| 4 | MQ1 方向多数类偏向 87/13（TX_TIMEOUT 11,170） | 采样温度/均匀类权重，或 sampler 后处理平衡 |
-| 5 | MQ2 inter_arrival 20 天间隙伪影破坏协议配对（TX_UNMATCHED 1,628） | cap inter_arrival 上界，或清洗数据伪影 |
+| 4 | inter_arrival 会话间隙排除取舍（KS=0.49） | 换取协议配对完美（checker 0 findings）；真实亚秒级间隔保留 |
 
 ---
 
@@ -399,7 +425,6 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 | 用途 | 路径 |
 |------|------|
 | 训练入口（1M 主脚本） | `tests/train_1m.py` |
-| 通用训练入口（三合一数据源） | `experiments/run_experiment.py` |
 | 训练编排 | `diffusion/training/trainer.py` |
 | 监控面板 | `experiments/monitor_v2.py` |
 | 采样/生成 | `diffusion/sampling/sampler.py` |

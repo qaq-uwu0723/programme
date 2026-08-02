@@ -338,17 +338,22 @@ func_code = int(row[col[f"{prefix}func_code"]] or 0)
 **回填**：V3.0 checkpoint 无需重训（模型在 z-score 空间训练，权重有效）——`backfill_v30.py` 重算 normalizer.json（raw stats + log_bounds）+ stub_distributions.npz。
 
 **inter_arrival_ns 路由决策**（2026-08-02）：修复后仍发现 inter_arrival 分布失配（gen p50=2e10 ns vs real 0.7ms）。诊断：真实分布 79% 为退化伪影（49% 钉死 1ns 时间戳精度下限 + 30% 跨会话 20 天间隙），Gaussian DDPM 结构上无法生成 δ 尖峰（V2.5 已确立的限制）。
-**措施**：inter_arrival 路由到 Type6 经验采样（生成时用 raw ns 覆盖，不动模型，不重训）。
-**效果**：分布百分位全对齐（gen p50=14.4 vs real 13.4，1ns 模式 48.2% vs 48.8%），代价是丢失窗口内时序相关性——但 49% 是 1ns 底，时序信号本就接近零。
+**措施**：inter_arrival 路由到 Type6 经验采样（生成时用 raw ns 覆盖，不动模型，不重训）。**后续**（MQ2）排除 >1s 会话间隙伪影，仅保留真实亚秒级间隔。
+**效果**：配对修复前分布百分位全对齐（gen p50=14.4 vs real 13.4，1ns 模式 48.2% vs 48.8%）；排除伪影后 inter_arrival KS 锁死 ~0.49（移除 48.7% 20 天模式的必然代价，换取协议配对完美）。
 
 **统计评估**（300 窗口生成 vs 300K 真实记录，`tests/eval_v30_metrics.py`）：
-- **Mean KS=0.093, Max KS=0.613**（6 标签混合数据）
-- inter_arrival_ns KS=**0.011**（经验路由历史最佳，V2.8.3 为 0.202）
+- **Mean KS=0.163, Max KS=0.613**（inter_arrival 0.49 + payload 0.61 拖高，均为已文档化取舍）
+- inter_arrival_ns KS=**0.49**（MQ2 排除会话间隙伪影的代价，从 0.011 上升）
 - payload_size KS=**0.613**（DDPM 架构限制——d_cond 无离散特征，只能学边缘分布，生成分布过窄）
-- 5 学习离散特征 Mean JSD=**0.072**（fc 0.157, direction 0.085, unit_id 0.119；is_exception/exception_code 0.000）
+- **5 学习离散特征 Mean JSD=0.0045**（fc 0.018, direction 0.004, unit_id 0.001；is_exception/exception_code 0.000）——温度采样保持离散保真
 - 其余特征 KS≤0.027（经验采样+死特征，零误差）
 
-**评估结论**：V3.0 统计质量由 payload_size 单一瓶颈决定（KS 0.613 拖高 Mean KS 至 0.093）。排除 payload_size 后其余连续特征 Mean KS≈0.008，历史最佳。payload_size 为已文档化的架构限制（DDPM 条件向量不含离散特征）。
+**协议有效性**（最终验证，16974 包）：
+- **checker 报告 0 findings**——生成→组装→校验全链路协议零错误
+- 温度采样（direction 87/13→65/35）+ assembler 注入响应保证配对 + 丢弃孤儿响应
+- 对比修复前：1523 TX_UNMATCHED + 2243 TX_TIMEOUT
+
+**评估结论**：V3.0 统计质量由 payload_size（0.61）与 inter_arrival（0.49，MQ2 取舍）决定。离散保真历史最佳（JSD=0.0045）。协议有效性从"大量配对失败"到"完全合法"。
 
 ---
 
@@ -388,6 +393,11 @@ func_code = int(row[col[f"{prefix}func_code"]] or 0)
 | cmd_sample 缺失 StubSampler | ✅ | V3.0后 |
 | inter_arrival expm1 溢出（log_bounds 持久化） | ✅ | V3.0后 |
 | inter_arrival_ns 退化分布（经验采样路由） | ✅ | V3.0后 |
+| MQ1 方向多数类偏向（温度采样 + assembler 配对保证） | ✅ | V3.0后 |
+| MQ2 inter_arrival 会话间隙（排除 >1s 伪影） | ✅ | V3.0后 |
+| 陈旧脚本引用已删除 PayloadLookup（5 个） | ✅ | V3.0后 |
+| 重训路径缺 inter_arrival 排除（train_1m 同步） | ✅ | V3.0后 |
+| .gitignore（仓库卫生） | ✅ | V3.0后 |
 
 ### 已知限制（V3.0 最终模型）
 
@@ -395,14 +405,13 @@ V3.0 定为项目最终模型。以下限制经评估为非功能性缺陷，记
 
 | # | 限制 | 影响评估 | 缓解措施 |
 |---|------|----------|----------|
-| 1 | DDPM 条件向量不含离散特征，payload_size 只能学边缘分布 p(ps) 而非 p(ps\|fc,dir) | **KS=0.613**，生成分布过窄（std 10.9 vs 真实 p99 72/max 8260），为 Mean KS 唯一瓶颈 | 架构改造（fc/dir 注入 d_cond），高成本，不纳入当前范围 |
-| 2 | disc loss 0.443 未完全收敛（d_model=128） | fc 存在随机预测错误（fc JSD=0.157），非系统性错误（旧模型 100% fc=0 已修复） | 继续训练或扩展 d_model 可改善，当前 2.4h 性价比已达边界 |
+| 1 | DDPM 条件向量不含离散特征，payload_size 只能学边缘分布 p(ps) 而非 p(ps\|fc,dir) | **KS=0.613**，生成分布过窄（std 10.9 vs 真实 p99 72/max 8260），为 Mean KS 瓶颈之一 | 架构改造（fc/dir 注入 d_cond），高成本，不纳入当前范围 |
+| 2 | disc loss 0.443 未完全收敛（d_model=128） | fc 存在随机预测错误（fc JSD=0.018），非系统性错误（旧模型 100% fc=0 已修复） | 继续训练或扩展 d_model 可改善，当前 2.4h 性价比已达边界 |
 | 3 | transaction_id 生成崩溃至 0 和 255 | JSD=0.99（override 后生成 0..65535 均匀 vs 真实 0..255） | sampler 层面随机 override 0..65535 已规避，但 JSD 统计失真 |
-| 4 | MaskedDiffusion 多数类偏向（MQ1） | direction 87/13 膨胀，9,544 请求无响应，TX_TIMEOUT 11,170 | 采样温度/均匀类权重，或 sampler 后处理平衡 |
-| 5 | inter_arrival 20 天间隙伪影（MQ2） | 生成流量协议配对几乎全失效（TX_UNMATCHED 1,628） | cap inter_arrival 上界（牺牲分布）或清洗数据伪影 |
+| 4 | inter_arrival 会话间隙排除（MQ2 取舍） | **KS=0.49**（移除 48.7% 的 20 天会话间隙伪影的必然结果） | 换取协议配对完美（checker 0 findings）；真实亚秒级间隔保留 |
 
-**决策依据**：五项均为架构/容量/数据伪影层面的固有限制，修复需重构 DDPM 条件机制、加温度采样或清洗数据。当前模型在数据正确性、生成管线稳定性上已满足项目目标——协议层校验零错误，剩余问题不影响 Modbus 单包合法性与攻击检测信号保真度。
+**决策依据**：四项均为架构/容量/数据伪影层面的固有限制，修复需重构 DDPM 条件机制或清洗数据源。当前模型在协议有效性（checker 零错误）、离散保真（JSD=0.0045）上达到项目目标——剩余问题不影响 Modbus 单包合法性与攻击检测信号保真度。
 
 ---
 
-> 最后更新：2026-08-02（V3.0 最终模型，管线全通）
+> 最后更新：2026-08-02（V3.0 最终模型，管线全通，checker 0 findings）

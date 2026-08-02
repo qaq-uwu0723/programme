@@ -45,6 +45,9 @@ class FeatureSchema:
 
     @property
     def vocab_sizes(self) -> List[int]:
+        # vocab=None → 256: high-cardinality TYPE6 discrete features (e.g.
+        # transaction_id) are not trained by MaskedDiffusion; the fallback gives
+        # the checker/evaluator a valid vocab width to report against.
         return [len(spec.vocab) if spec.vocab else 256 for spec in self.discrete]
 
     def adapt_to_data(
@@ -68,6 +71,9 @@ class FeatureSchema:
             X_cont_flat = X_cont_flat.cpu().numpy()
         if X_cont_flat.ndim == 3:
             flat = X_cont_flat.reshape(-1, X_cont_flat.shape[-1])
+        elif X_cont_flat.ndim == 1:
+            # Single-feature input: treat as (N, 1)
+            flat = X_cont_flat.reshape(-1, 1)
         else:
             flat = X_cont_flat
         stds = flat.std(axis=0)
@@ -76,12 +82,15 @@ class FeatureSchema:
         cardinality = np.array([len(np.unique(flat[:, i])) for i in range(flat.shape[1])])
 
         new_cont = []
+        n_cols = flat.shape[1]
         for i, spec in enumerate(self.continuous):
             new_spec = FeatureSpec(
                 name=spec.name, kind=spec.kind, var_type=spec.var_type,
                 vocab=spec.vocab, min_val=spec.min_val, max_val=spec.max_val,
             )
-            if spec.kind == FeatureKind.CONTINUOUS and spec.var_type == VariableType.TYPE4:
+            # Only reclassify features with a matching data column; leave others
+            # unchanged (e.g. 1D input against a multi-feature schema).
+            if i < n_cols and spec.kind == FeatureKind.CONTINUOUS and spec.var_type == VariableType.TYPE4:
                 if stds[i] < dead_threshold:
                     new_spec.var_type = VariableType.TYPE6  # dead → stub
                 elif cardinality[i] < 15:

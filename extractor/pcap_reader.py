@@ -9,7 +9,10 @@ import struct
 
 # Reuse checker internals for parsing
 import sys
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent.parent))
+from pathlib import Path
+_ROOT = str(Path(__file__).parent.parent)
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 from checker.decode import decode_packet
 from checker.mbap import parse_mbap, parse_modbus_adu
 
@@ -71,7 +74,7 @@ def extract_packets(pcap_path: str) -> List[PacketRecord]:
             continue
 
         payload = decoded.tcp_payload
-        if len(payload) < 7:
+        if len(payload) < 8:  # MBAP (7) + PDU function code (1)
             continue
 
         # Parse Modbus ADU
@@ -94,9 +97,10 @@ def extract_packets(pcap_path: str) -> List[PacketRecord]:
             inter_arrival_ns = 10_000_000  # 10ms default for first packet
         prev_ts_ns = ts_ns
 
-        # Extract register-level fields from PDU
+        # Extract register-level fields from PDU (direction-aware: responses and
+        # requests have different PDU layouts)
         reg_addr, reg_vals, quantity = _extract_pdu_fields(
-            adu.function_code, adu.pdu_data, adu.is_exception
+            adu.function_code, adu.pdu_data, adu.is_exception, direction
         )
 
         records.append(PacketRecord(
@@ -114,7 +118,10 @@ def extract_packets(pcap_path: str) -> List[PacketRecord]:
             is_exception=adu.is_exception,
             exception_code=adu.exception_code or 0,
             pdu_data=adu.pdu_data,
-            payload_size=len(payload),
+            # payload_size: FARAONIC CSV defines it as IP total length (IP_len),
+            # which includes IP (20B) + TCP (20B) headers. Approximate the same
+            # definition here for cross-source consistency.
+            payload_size=len(payload) + 40,
             register_address=reg_addr,
             register_values=reg_vals,
             quantity=quantity,
@@ -127,10 +134,14 @@ def _extract_pdu_fields(
     raw_function_code: int,
     pdu_data: bytes,
     is_exception: bool,
+    direction: str,
 ) -> Tuple[int, List[int], int]:
     """Extract register address, values, and quantity from PDU data.
 
-    Handles the most common Modbus function codes (3, 6, 16).
+    Handles the most common Modbus function codes (3, 6, 16). Read-type
+    requests and responses have different PDU layouts (2B addr+qty vs
+    1B byte_count+values), so direction disambiguates them — a read response
+    with >=2 registers would otherwise be misparsed as a request.
 
     Returns:
         (register_address, register_values_list, quantity)
@@ -146,37 +157,44 @@ def _extract_pdu_fields(
 
     try:
         if base_fc in (1, 2, 3, 4):
-            # Read requests: 2B address + 2B quantity
-            if len(pdu_data) >= 4:
-                register_address = int.from_bytes(pdu_data[0:2], "big")
-                quantity = int.from_bytes(pdu_data[2:4], "big")
-            # Read responses: 1B byte_count + N×2B values
-            elif len(pdu_data) >= 1:
-                byte_count = pdu_data[0]
-                quantity = byte_count // 2
-                register_address = 0  # not in response
-                for j in range(min(3, quantity)):
-                    off = 1 + j * 2
-                    if off + 2 <= len(pdu_data):
-                        register_values[j] = int.from_bytes(pdu_data[off:off+2], "big")
+            if direction == "c2s":
+                # Read request: 2B address + 2B quantity
+                if len(pdu_data) >= 4:
+                    register_address = int.from_bytes(pdu_data[0:2], "big")
+                    quantity = int.from_bytes(pdu_data[2:4], "big")
+            else:
+                # Read response: 1B byte_count + N×2B values
+                if len(pdu_data) >= 1:
+                    byte_count = pdu_data[0]
+                    quantity = byte_count // 2
+                    for j in range(min(3, quantity)):
+                        off = 1 + j * 2
+                        if off + 2 <= len(pdu_data):
+                            register_values[j] = int.from_bytes(pdu_data[off:off+2], "big")
 
         elif base_fc in (5, 6):
-            # Write single: 2B address + 2B value
+            # Write single: 2B address + 2B value (same layout both directions)
             if len(pdu_data) >= 4:
                 register_address = int.from_bytes(pdu_data[0:2], "big")
                 register_values[0] = int.from_bytes(pdu_data[2:4], "big")
                 quantity = 1
 
         elif base_fc in (15, 16):
-            # Write multiple: 2B address + 2B quantity + 1B byte_count + values
-            if len(pdu_data) >= 5:
-                register_address = int.from_bytes(pdu_data[0:2], "big")
-                quantity = int.from_bytes(pdu_data[2:4], "big")
-                byte_count = pdu_data[4]
-                for j in range(min(3, quantity)):
-                    off = 5 + j * 2
-                    if off + 2 <= len(pdu_data):
-                        register_values[j] = int.from_bytes(pdu_data[off:off+2], "big")
+            if direction == "c2s":
+                # Write-multiple request: 2B addr + 2B qty + 1B byte_count + values
+                if len(pdu_data) >= 5:
+                    register_address = int.from_bytes(pdu_data[0:2], "big")
+                    quantity = int.from_bytes(pdu_data[2:4], "big")
+                    byte_count = pdu_data[4]
+                    for j in range(min(3, quantity)):
+                        off = 5 + j * 2
+                        if off + 2 <= len(pdu_data):
+                            register_values[j] = int.from_bytes(pdu_data[off:off+2], "big")
+            else:
+                # Write-multiple response: 2B addr + 2B qty
+                if len(pdu_data) >= 4:
+                    register_address = int.from_bytes(pdu_data[0:2], "big")
+                    quantity = int.from_bytes(pdu_data[2:4], "big")
 
     except (IndexError, struct.error):
         pass

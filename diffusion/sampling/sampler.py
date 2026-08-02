@@ -109,6 +109,7 @@ class MaskDDPMSampler:
         num_samples: int = 1,
         seed_seq: Optional[torch.Tensor] = None,
         num_unmask_steps: int = 50,
+        temperature: float = 1.0,
     ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
         """Generate synthetic feature windows.
 
@@ -116,6 +117,8 @@ class MaskDDPMSampler:
             num_samples: number of windows to generate (B)
             seed_seq: optional (B, seed_len, d_c) to prime the trend model
             num_unmask_steps: reverse steps for masked diffusion
+            temperature: masked-diffusion sampling temperature (>1 reduces
+                majority-class amplification, →0 is greedy argmax)
 
         Returns:
             X_hat: (B, L, d_c) generated continuous features (denormalized, ALL features)
@@ -144,6 +147,7 @@ class MaskDDPMSampler:
         Y_hat = self.mask_diff.sample(
             B, self.L, S_hat, x_hat=X_active_norm,
             num_unmask_steps=num_unmask_steps,
+            temperature=temperature,
         )
 
         # --- Step 4b: Override transaction_id with random values ---
@@ -216,14 +220,12 @@ class MaskDDPMSampler:
         return X_hat
 
     def _get_active_mask(self, device) -> torch.Tensor:
-        """Boolean mask of shape (d_c_all,) — True for DDPM-routed features."""
-        routes = self.schema.continuous
-        mask = torch.zeros(len(routes), dtype=torch.bool, device=device)
-        from extractor.schema import VariableType
-        for i, spec in enumerate(routes):
-            if spec.var_type == VariableType.TYPE4:
-                mask[i] = True
-        return mask
+        """Boolean mask of shape (d_c_all,) — True for DDPM-routed features.
+
+        Delegates to TypeRouter to avoid duplicating routing logic.
+        """
+        from ..models.type_router import TypeRouter
+        return TypeRouter(self.schema).get_ddpm_mask(len(self.schema.continuous), device)
 
     def _build_full_tensor(
         self, X_active: torch.Tensor, active_mask: torch.Tensor,

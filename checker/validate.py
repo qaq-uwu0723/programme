@@ -1,5 +1,5 @@
 """Main validation pipeline — runs all checker rules."""
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 from .report import Finding, Report, Severity
 from .meta import PacketMeta
@@ -113,7 +113,7 @@ def validate(
             continue
 
         # --- Step 3: PDU validation + descriptor parse ---
-        pdu_findings = _check_modbus_pdu(
+        pdu_findings, parsed_result = _check_modbus_pdu(
             pdu, mbap.unit_id, meta.direction, config,
             pcap_index, meta.event_id, flow_dict, mode,
         )
@@ -126,13 +126,9 @@ def validate(
         except ValueError:
             continue
 
-        # Attach descriptor-parsed fields to the ADU for downstream checks
-        if not adu.is_exception:
-            try:
-                parsed = parse_full_pdu(pdu, mbap.unit_id, config, meta.direction)
-                adu.parsed_fields = parsed
-            except Exception:
-                pass
+        # Attach descriptor-parsed fields (reused from _check_modbus_pdu)
+        if not adu.is_exception and parsed_result is not None:
+            adu.parsed_fields = parsed_result
 
         # --- Step 4: transaction pairing ---
         tx_findings = _check_transaction(
@@ -219,9 +215,14 @@ def _check_modbus_pdu(
     event_id: int,
     flow: dict,
     mode: str,
-) -> List[Finding]:
-    """RuleFunctionPduWellFormed: validate PDU structure and parse with descriptor."""
+) -> Tuple[List[Finding], Optional[dict]]:
+    """RuleFunctionPduWellFormed: validate PDU structure and parse with descriptor.
+
+    Returns (findings, parsed_result) where parsed_result is the descriptor-parse
+    dict (reused by the caller to avoid a second parse_full_pdu call).
+    """
     findings: List[Finding] = []
+    parsed_result: Optional[dict] = None
 
     if len(pdu) < 1:
         findings.append(Finding(
@@ -230,7 +231,7 @@ def _check_modbus_pdu(
             code="PDU_EMPTY",
             message="Modbus PDU is empty (no function code)",
         ))
-        return findings
+        return findings, parsed_result
 
     function_code = pdu[0]
     is_exception = (function_code & 0x80) != 0
@@ -255,12 +256,13 @@ def _check_modbus_pdu(
                 code="PDU_EXCEPTION_NO_CODE",
                 message="Exception response has no exception code byte",
             ))
-        return findings
+        return findings, parsed_result
 
     # Descriptor parse
     if desc is not None:
         try:
             result = parse_full_pdu(pdu, unit_id, config, direction)
+            parsed_result = result
             if "_parse_error" in result:
                 findings.append(Finding(
                     pcap_index=pcap_index, event_id=event_id, flow=flow,
@@ -287,7 +289,7 @@ def _check_modbus_pdu(
                 observed={"unit_id": unit_id},
             ))
 
-    return findings
+    return findings, parsed_result
 
 
 def _check_transaction(

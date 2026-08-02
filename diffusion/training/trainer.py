@@ -20,6 +20,15 @@ from ..utils.checkpoint import save_checkpoint, load_checkpoint
 from extractor.schema import FeatureSchema
 
 
+def _warn_nan_inf(what: str, epoch: int, log_fn) -> None:
+    """Emit a warning when a training loss is NaN/Inf instead of silently decaying."""
+    msg = f"WARNING: NaN/Inf {what} at epoch {epoch} — training is diverging"
+    if log_fn:
+        log_fn(msg)
+    else:
+        print(msg, flush=True)
+
+
 class EMAModel:
     """Exponential Moving Average of model parameters."""
 
@@ -158,7 +167,7 @@ class MaskDDPMTrainer:
         scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             self.trend_optimizer, factor=0.5, patience=20
         )
-        scaler = GradScaler("cuda")
+        scaler = GradScaler(self.device.type)
 
         history = {"train_loss": [], "val_loss": []}
 
@@ -168,7 +177,7 @@ class MaskDDPMTrainer:
             for (batch,) in loader:
                 batch = batch.to(self.device)
                 self.trend_optimizer.zero_grad()
-                with autocast("cuda"):
+                with autocast(self.device.type):
                     loss = self.trend_model.compute_loss(batch)
                 scaler.scale(loss).backward()
                 scaler.unscale_(self.trend_optimizer)
@@ -176,6 +185,8 @@ class MaskDDPMTrainer:
                 scaler.step(self.trend_optimizer)
                 scaler.update()
                 epoch_loss += loss.item() * batch.size(0)
+                if not torch.isfinite(loss):
+                    _warn_nan_inf(f"trend loss", epoch + 1, log_fn)
 
             epoch_loss /= len(train_data)
             history["train_loss"].append(epoch_loss)
@@ -284,7 +295,7 @@ class MaskDDPMTrainer:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
             self.diffusion_optimizer, T_0=50, T_mult=2
         )
-        scaler = GradScaler("cuda")
+        scaler = GradScaler(self.device.type)
 
         history = {"train_loss_cont": [], "train_loss_disc": [], "train_loss_total": [],
                    "val_loss_total": []}
@@ -310,7 +321,7 @@ class MaskDDPMTrainer:
                 B = r0.size(0)
 
                 # Continuous + Discrete forward with AMP
-                with autocast("cuda"):
+                with autocast(self.device.type):
                     loss_cont, k, eps_pred = self.ddpm(r0, s_hat)
                     loss_disc = self.mask_diff(y_list, s_hat, x_hat=s_hat)
                     total = loss_cont * lambda_bal + loss_disc * (1.0 - lambda_bal)
@@ -327,6 +338,8 @@ class MaskDDPMTrainer:
                 epoch_disc += loss_disc.item() * B
                 epoch_total += total.item() * B
                 n_samples += B
+                if not torch.isfinite(total):
+                    _warn_nan_inf(f"diffusion loss", epoch + 1, log_fn)
 
             scheduler.step()
 

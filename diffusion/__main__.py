@@ -103,7 +103,9 @@ def cmd_sample(args) -> None:
         print(f"Loaded stub distributions from {stub_path}")
 
     num_windows = args.num_windows
-    X_hat, Y_hat = sampler.generate(num_samples=num_windows)
+    X_hat, Y_hat = sampler.generate(
+        num_samples=num_windows, temperature=args.temperature,
+    )
 
     # Save
     out = Path(args.output)
@@ -153,6 +155,8 @@ def main(argv=None) -> None:
     p_sample.add_argument("--config")
     p_sample.add_argument("--output", default="generated/")
     p_sample.add_argument("--num-windows", type=int, default=10)
+    p_sample.add_argument("--temperature", type=float, default=1.0,
+                          help="Masked-diffusion sampling temperature (>1 flattens, reduces majority-class bias)")
 
     # eval
     p_eval = sub.add_parser("eval", help="Evaluate generated data")

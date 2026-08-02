@@ -31,7 +31,7 @@ def read_faraonic_csv(
         col = {h: i for i, h in enumerate(headers)}
 
         for row in reader:
-            if max_rows and len(records) >= max_rows:
+            if max_rows is not None and len(records) >= max_rows:
                 break
             if label_filter and row[col["Classification"]] != label_filter:
                 continue
@@ -119,6 +119,8 @@ def read_faraonic_csv(
                 pdu_data=b"",
                 payload_size=payload_size,
                 register_address=reg_addr,
+                # FARAONIC has one sensor reading per packet; [1]/[2] are
+                # intentionally 0 (matches the single-value source data).
                 register_values=[reg_val_0, 0, 0],
                 quantity=max(1, quantity),
             ))

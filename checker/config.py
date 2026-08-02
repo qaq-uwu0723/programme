@@ -34,7 +34,7 @@ class FieldDescriptor:
     length: Optional[int] = None
     length_from: Optional[str] = None
     scale: Optional[float] = None
-    enum_map: Optional[Dict[int, str]] = None
+    enum_map: Optional[Dict[str, str]] = None
 
     @staticmethod
     def from_dict(data: Dict[str, Any]) -> "FieldDescriptor":

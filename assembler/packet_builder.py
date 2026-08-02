@@ -3,7 +3,7 @@
 This is the DIFFUSION → CHECKER integration contract.
 Output format matches exactly what checker/validate.py expects.
 """
-from typing import Dict, List, Optional, Tuple
+from typing import List
 
 import torch
 import numpy as np
@@ -49,9 +49,7 @@ from extractor.schema import FeatureSchema
 # Column indices in the continuous tensor (matching default_modbus schema)
 C_REG_VALUE_0 = 0
 C_REG_VALUE_1 = 1
-C_REG_VALUE_2 = 2
 C_INTER_ARRIVAL_NS = 3
-C_PAYLOAD_SIZE = 4
 C_REG_ADDRESS = 5
 C_QUANTITY = 6
 
@@ -92,7 +90,8 @@ def _expected_fields(
                    3: "quantity_of_registers", 4: "quantity_of_registers"}[func_code]
             return {"starting_address": reg_addr, qty: quantity}
         elif func_code == 5:
-            return {"output_address": reg_addr, "output_value": v0 & 0xFF00}
+            # checker enum-maps FC5 request output_value (0→OFF, 0xFF00→ON)
+            return {"output_address": reg_addr, "output_value": "ON" if (v0 & 0xFF00) else "OFF"}
         elif func_code == 6:
             return {"register_address": reg_addr, "register_value": v0}
         elif func_code == 8:
@@ -115,7 +114,7 @@ def _expected_fields(
         elif func_code == 4:
             return {"byte_count": quantity * 2}
         elif func_code == 5:
-            return {"output_address": reg_addr, "output_value": v0 & 0xFF00}
+            return {"output_address": reg_addr, "output_value": 0xFF00 if (v0 & 0xFF00) else 0}
         elif func_code == 6:
             return {"register_address": reg_addr, "register_value": v0}
         elif func_code == 8:
@@ -207,10 +206,11 @@ class PacketAssembler:
                     _next_txid = (_next_txid + 1) % 65536
                 else:
                     req = pending_requests.pop(0) if pending_requests else None
-                    txid = req["txid"] if req else 0
-                    if req:
-                        func_code = req["func_code"]  # echo request fc
-                        unit_id = req["unit_id"]      # echo request unit id
+                    if req is None:
+                        continue  # orphan response (no outstanding request) — drop it
+                    txid = req["txid"]
+                    func_code = req["func_code"]  # echo request fc
+                    unit_id = req["unit_id"]      # echo request unit id
 
                 # Pick src/dst based on direction
                 if direction == "c2s":
@@ -277,10 +277,58 @@ class PacketAssembler:
                 if direction == "c2s":
                     pending_requests.append({"txid": txid, "func_code": func_code, "unit_id": unit_id})
 
+            # --- Inject responses for unanswered requests (protocol pairing guarantee) ---
+            # The model may generate more c2s than s2c. Every Modbus request must
+            # get a response, so pair leftovers here — the checker then sees no
+            # orphan requests / timed-out transactions.
+            last_idx = N - 1
+            inj_idx = N
+            while pending_requests:
+                req = pending_requests.pop(0)
+                r_fc, r_txid, r_uid = req["func_code"], req["txid"], req["unit_id"]
+                is_exc = bool(Y[last_idx, D_IS_EXCEPTION])
+                exc_code = max(0, min(255, int(Y[last_idx, D_EXCEPTION_CODE])))
+                reg_addr = max(0, min(65535, _safe_int(X[last_idx, C_REG_ADDRESS])))
+                quantity = max(1, min(125, _safe_int(X[last_idx, C_QUANTITY])))
+
+                adu = self._build_adu(
+                    r_fc, r_txid, r_uid, "s2c", is_exc, exc_code,
+                    reg_addr, quantity, X, last_idx,
+                )
+                seq, ack = next_ack, next_seq
+                next_ack += len(adu.raw)
+
+                pkt = (
+                    Ether()
+                    / IP(src=self.server_ip, dst=self.client_ip)
+                    / TCP(sport=self.server_port, dport=self.client_port, flags="PA", seq=seq, ack=ack)
+                    / Raw(load=adu.raw)
+                )
+                packets.append(pkt)
+
+                v0 = max(0, min(65535, _safe_int(X[last_idx, C_REG_VALUE_0])))
+                v1 = max(0, min(65535, _safe_int(X[last_idx, C_REG_VALUE_1])))
+                write_meta_line(
+                    meta_fp,
+                    trace_id=trace_id,
+                    event_id=inj_idx,
+                    pcap_index=inj_idx,
+                    ts_ns=ts_ns,
+                    direction="s2c",
+                    src_ip=self.server_ip,
+                    src_port=self.server_port,
+                    dst_ip=self.client_ip,
+                    dst_port=self.client_port,
+                    expected_modbus={"transaction_id": r_txid, "unit_id": r_uid, "function_code": r_fc},
+                    expected_fields=_expected_fields(r_fc, "s2c", reg_addr, quantity, v0, v1),
+                )
+                ts_ns += 1000  # small gap for injected response
+                inj_idx += 1
+
         # Write PCAP
         wrpcap(output_pcap, packets)
         print(f"Wrote {len(packets)} packets to {output_pcap}")
-        print(f"Wrote {N} metadata lines to {output_meta}")
+        print(f"Wrote {inj_idx} metadata lines to {output_meta}")
 
     def _build_adu(
         self,
@@ -324,7 +372,7 @@ class PacketAssembler:
             elif func_code == 4:
                 return build_read_input_registers_request(txid, unit_id, reg_addr, quantity)
             elif func_code == 5:
-                return build_write_single_coil_request(txid, unit_id, reg_addr, v0 & 0xFF00)
+                return build_write_single_coil_request(txid, unit_id, reg_addr, 0xFF00 if (v0 & 0xFF00) else 0)
             elif func_code == 6:
                 return build_write_single_register_request(txid, unit_id, reg_addr, v0)
             elif func_code == 8:
@@ -353,7 +401,7 @@ class PacketAssembler:
             elif func_code == 4:
                 return build_read_input_registers_response(txid, unit_id, _reg_bytes())
             elif func_code == 5:
-                return build_write_single_coil_response(txid, unit_id, reg_addr, v0 & 0xFF00)
+                return build_write_single_coil_response(txid, unit_id, reg_addr, 0xFF00 if (v0 & 0xFF00) else 0)
             elif func_code == 6:
                 return build_write_single_register_response(txid, unit_id, reg_addr, v0)
             elif func_code == 8:

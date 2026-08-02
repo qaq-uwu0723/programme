@@ -159,11 +159,17 @@ class MaskedDiffusion(nn.Module):
         s_cond: torch.Tensor,
         x_hat: Optional[torch.Tensor] = None,
         num_unmask_steps: int = 50,
+        temperature: float = 1.0,
     ) -> List[torch.Tensor]:
         """Generate discrete sequences by iterative unmasking.
 
-        Strategy: start all-mask, at each reverse step predict the most
-        confident unmasked tokens and commit them.
+        Strategy: start all-mask, at each reverse step commit the highest-
+        confidence unmasked positions, sampling their tokens from the
+        temperature-softened distribution.
+
+        temperature: >1 flattens (more diversity, reduces majority-class
+        amplification), →0 approaches greedy argmax (default 1.0 samples from
+        the learned posterior).
 
         Args:
             B: batch size
@@ -171,6 +177,7 @@ class MaskedDiffusion(nn.Module):
             s_cond: (B, L, d_cond) trend conditioning
             x_hat: (B, L, d_c) optional continuous context
             num_unmask_steps: how many reverse steps (subset of K)
+            temperature: softmax sampling temperature
 
         Returns:
             list of (B, L) discrete sequences (token indices)
@@ -209,20 +216,28 @@ class MaskedDiffusion(nn.Module):
 
             for j, head in enumerate(self.output_heads):
                 logits = head(h)           # (B, L, |V_j|)
-                probs = F.softmax(logits, dim=-1)
-                max_prob, pred_token = probs.max(dim=-1)  # (B, L)
-
-                # Only update positions that are currently masked
+                vs = self.vocab_sizes[j]
                 m = mask_now[j]
                 if not m.any():
                     continue
 
+                # Confidence for position selection = max probability
+                probs = F.softmax(logits, dim=-1)
+                max_prob = probs.max(dim=-1).values
+
+                # Sample token from temperature-softened distribution.
+                # temperature→0 recovers greedy argmax; >1 reduces majority bias.
+                if temperature <= 1e-6:
+                    pred_token = logits.argmax(dim=-1)
+                else:
+                    flat_logits = (logits / temperature).reshape(-1, vs)
+                    sampled = torch.multinomial(
+                        F.softmax(flat_logits, dim=-1), 1
+                    ).reshape(B, L)
+                    pred_token = sampled
+
                 # Unmask a fraction of positions determined by the schedule
-                # At step k, we expect m_k fraction still masked after this step.
-                # The number to unmask now is proportional to the schedule.
                 num_masked = m.sum().item()
-                # Target: after this step, we want m_{k-1} fraction masked
-                # (or 0 if k is the first reverse step)
                 target_masked_frac = self.mask_probs[k - 1].item() if k > 0 else 0.0
                 num_to_keep = max(0, int(target_masked_frac * B * L))
                 num_to_unmask = max(1, num_masked - num_to_keep)
