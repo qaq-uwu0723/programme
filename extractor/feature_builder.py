@@ -168,13 +168,20 @@ def build_training_data(
     # Step 3: slice into windows
     X_w, Y_w = build_windows(X_norm, Y_flat, window_length, stride)
 
+    # Observed log1p-space bounds for log features (used to clamp expm1 at generation,
+    # preventing astronomical values from heavy-tailed distributions).
+    log_features = [3]  # inter_arrival_ns was log1p-transformed
+    log_bounds = {idx: [float(X_flat[:, idx].min()), float(X_flat[:, idx].max())]
+                  for idx in log_features}
+
     stats = {
         "mean": mean.squeeze(0).tolist(),
         "std": std.squeeze(0).tolist(),
         "num_records": len(records),
         "num_windows": X_w.shape[0],
         "window_length": window_length,
-        "log_features": [3],  # inter_arrival_ns was log1p-transformed
+        "log_features": log_features,
+        "log_bounds": log_bounds,
     }
 
     if normalizer_stats_path is not None:

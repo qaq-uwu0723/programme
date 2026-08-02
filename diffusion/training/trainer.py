@@ -27,6 +27,7 @@ class EMAModel:
         self.model = model
         self.decay = decay
         self.shadow: Dict[str, torch.Tensor] = {}
+        self._backup: Dict[str, torch.Tensor] = {}
         self._register()
 
     def _register(self):
@@ -42,16 +43,17 @@ class EMAModel:
                 )
 
     def apply(self):
-        """Copy shadow params into the model (for sampling)."""
+        """Copy shadow params into the model (for sampling), backing up originals first."""
         for name, param in self.model.named_parameters():
             if param.requires_grad:
+                self._backup[name] = param.data.clone()
                 param.data.copy_(self.shadow[name])
 
     def restore(self):
-        """Restore original model params (for continuing training)."""
+        """Restore original model params (for continuing training after apply)."""
         for name, param in self.model.named_parameters():
-            if param.requires_grad:
-                param.data.copy_(self.shadow[name])
+            if param.requires_grad and name in self._backup:
+                param.data.copy_(self._backup[name])
 
 
 class MaskDDPMTrainer:
@@ -420,6 +422,15 @@ class MaskDDPMTrainer:
         torch.save(self.mask_diff.state_dict(), f"{path}/mask_diff_model.pt")
         if self.ddpm_ema:
             torch.save(self.ddpm_ema.shadow, f"{path}/ddpm_ema.pt")
+        # Save schema adaptation info for reconstruction at sampling time
+        import json
+        schema_info = {
+            "d_c_active": self.d_c_active,
+            "active_indices": self.active_indices,
+            "d_c_all": self.d_c_all,
+        }
+        with open(f"{path}/schema_info.json", "w") as f:
+            json.dump(schema_info, f)
         print(f"Models saved to {path}/")
 
     def load(self, path: str) -> None:

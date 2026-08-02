@@ -14,6 +14,8 @@ class Normalizer:
         self.eps = eps
         self.mean: Optional[torch.Tensor] = None   # (num_features,)
         self.std: Optional[torch.Tensor] = None     # (num_features,)
+        self.log_features: List[int] = []
+        self.log_bounds: Dict[int, Tuple[float, float]] = {}  # log1p-space [min, max] per log feature
 
     def fit(self, data: torch.Tensor) -> "Normalizer":
         """Compute mean/std from data.
@@ -72,6 +74,8 @@ class Normalizer:
             "mean": self.mean.tolist() if self.mean is not None else [],
             "std": self.std.tolist() if self.std is not None else [],
             "num_features": self.num_features,
+            "log_features": self.log_features,
+            "log_bounds": {str(k): list(v) for k, v in self.log_bounds.items()},
         }
         with open(path, "w", encoding="utf-8") as f:
             json.dump(d, f, indent=2)
@@ -81,9 +85,11 @@ class Normalizer:
         import json
         with open(path, "r", encoding="utf-8") as f:
             d = json.load(f)
-        # Support both formats: diffusion save (num_features) and extractor save (mean/std only)
         nf = d.get("num_features", len(d["mean"]))
         n = Normalizer(nf)
         n.mean = torch.tensor(d["mean"], dtype=torch.float32) if d.get("mean") else None
         n.std = torch.tensor(d["std"], dtype=torch.float32) if d.get("std") else None
+        n.log_features = d.get("log_features", [])
+        lb = d.get("log_bounds", {})
+        n.log_bounds = {int(k): tuple(v) for k, v in lb.items()}
         return n

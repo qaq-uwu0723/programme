@@ -53,7 +53,10 @@ def parse_mbap(data: bytes) -> Tuple[MbapHeader, bytes]:
         unit_id=unit_id,
     )
 
-    remaining = data[7:]
+    # MBAP length field = number of bytes after the length field (unit_id + PDU).
+    # Truncate to the declared length so trailing garbage is not parsed as PDU.
+    pdu_length = max(0, length - 1)
+    remaining = data[7:7 + pdu_length]
     return header, remaining
 
 

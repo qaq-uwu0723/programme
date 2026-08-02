@@ -66,6 +66,20 @@ def cmd_sample(args) -> None:
     config = DiffusionConfig.load(args.config) if args.config else DiffusionConfig()
     device = torch.device("cpu")
 
+    # Load schema adaptation info saved during training
+    import json
+    schema_info_path = Path(args.model) / "schema_info.json"
+    if schema_info_path.exists():
+        with open(schema_info_path) as f:
+            info = json.load(f)
+        active_indices = set(info["active_indices"])
+        from extractor.schema import VariableType
+        for i, spec in enumerate(schema.continuous):
+            if i in active_indices:
+                spec.var_type = VariableType.TYPE4
+            else:
+                spec.var_type = VariableType.TYPE6
+
     # Load normalizer
     normalizer = Normalizer.load(Path(args.model) / "normalizer.json")
 
@@ -80,6 +94,13 @@ def cmd_sample(args) -> None:
         trainer.trend_model, trainer.ddpm, trainer.mask_diff,
         normalizer, schema, device=device,
     )
+
+    # Load empirical stub distributions saved during training (Type6 features)
+    stub_path = Path(args.model) / "stub_distributions.npz"
+    if stub_path.exists():
+        from .sampling.sampler import StubSampler
+        sampler.stub_sampler = StubSampler.load(str(stub_path))
+        print(f"Loaded stub distributions from {stub_path}")
 
     num_windows = args.num_windows
     X_hat, Y_hat = sampler.generate(num_samples=num_windows)

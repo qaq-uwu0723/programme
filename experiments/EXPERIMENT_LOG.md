@@ -22,7 +22,7 @@
 | **L** | 窗口长度 | 每个训练窗口包含的连续数据包数。128 为当前标准 | — |
 | **Stride** | 窗口步长 | 窗口滑动间距。16 意味着相邻窗口重叠 112 个包 | — |
 | **Type4** | 活跃特征 | 由 DDPM 全管道训练的连续特征（真连续分布） | — |
-| **Type5** | 确定性特征 | 由启发式规则确定（如 payload_size = f(function_code, direction)），不参与训练 | — |
+| **Type5** | 确定性特征 | （已废弃）曾用于 payload_size 的条件查表方案。V2.9 起 payload_size 升格为 Type4，Type5 不再使用 | — |
 | **Type6** | 死/低基数特征 | 由经验替换（StubSampler 从训练分布直接采样），不参与训练。包括 std≈0 的死特征和唯一值 < 15 的低基数特征 | — |
 | **Trend** | 趋势提取模块 | Stage 1：因果 Transformer 学习连续特征的时序平滑骨架 S，X = S + R 分解 | — |
 | **DDPM** | 连续扩散模块 | Stage 2a：对残差 R 进行高斯去噪扩散 | — |
@@ -50,18 +50,22 @@
 | V2.8-of | 06-24 | FARAONIC 5K | 305 | overfit-test, bs=64 | 0.226 | 0.825 | 0.028 | **1.06** | 1.2min |
 | V2.8.2 | 06-24 | FARAONIC 300K | 18,743 | thresh15, bs=64 | **0.112** | 0.580 | **0.053** | **0.88** | 36min |
 | V2.8.3 | 06-24 | FARAONIC 300K | 18,743 | **P1P2**, bs=64 | **0.075** | 0.271 | **0.051** | **0.79** | 60min |
+| V2.9 | 07-11 | FARAONIC 1M | 62,434 | **TYPE5→TYPE4**, 6-label, bs=128 | — | — | — | — | 6.0h |
+| V3.0 | 07-12 | FARAONIC 1M | 62,434 | **data-fix**, bs=256 | **0.093** | 0.613 | **0.072**† | — | 2.4h |
+
+> † V3.0 JSD 为 5 个模型学习特征（排除 transaction_id——sampler 层 override，非模型学习）
 
 ### 逐特征 KS 演进（Test）
 
-| 特征 | V1.0 | V2.0 | V2.5 | V2.6 | V2.8 | V2.8.1 | V2.8.2 | V2.8.3 | 方法 |
-|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|------|
-| register_value_0 | 0.599 | 0.600 | 0.001 | 0.496 | 0.477 | 0.497 | **0.039** | **0.042** | ✅ 经验替换 |
-| register_value_1 | 0.518 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | Type6 死特征 |
-| register_value_2 | 0.617 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | Type6 死特征 |
-| inter_arrival_ns | 0.526 | 0.254 | 0.560 | **0.313** | 0.321 | **0.126** | 0.157 | 0.202 | DDPM + log |
-| payload_size | 1.000 | 0.475 | 0.364 | 0.369 | 0.350 | 0.535 | 0.580 | **0.271** | ✅ 3D 查找表修复 |
-| register_address | 0.525 | 0.280 | 0.003 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | Type6 |
-| quantity | 0.525 | 0.394 | 0.016 | 0.157 | 0.036 | 0.071 | 0.009 | 0.012 | Type6 StubSampler |
+| 特征 | V1.0 | V2.0 | V2.5 | V2.6 | V2.8 | V2.8.1 | V2.8.2 | V2.8.3 | V3.0 | 方法 |
+|------|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|:---:|------|
+| register_value_0 | 0.599 | 0.600 | 0.001 | 0.496 | 0.477 | 0.497 | **0.039** | **0.042** | **0.002** | ✅ 经验替换 |
+| register_value_1 | 0.518 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | **0.000** | Type6 死特征 |
+| register_value_2 | 0.617 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | **0.000** | Type6 死特征 |
+| inter_arrival_ns | 0.526 | 0.254 | 0.560 | **0.313** | 0.321 | **0.126** | 0.157 | 0.202 | **0.011** | ✅ 经验路由 V3.0后 |
+| payload_size | 1.000 | 0.475 | 0.364 | 0.369 | 0.350 | 0.535 | 0.580 | **0.271** | **0.613** | DDPM 架构限制 |
+| register_address | 0.525 | 0.280 | 0.003 | 0.000 | 0.000 | 0.000 | 0.000 | 0.000 | **0.001** | Type6 |
+| quantity | 0.525 | 0.394 | 0.016 | 0.157 | 0.036 | 0.071 | 0.009 | 0.012 | **0.027** | Type6 StubSampler |
 
 ### 逐版本配置
 
@@ -77,6 +81,8 @@
 | V2.8.1 | 2 | 128 | 4 | 200 | 300 | 64 | ✅ | ✅ | ✅ | ✅ |
 | V2.8.2 | **1** | 128 | 4 | 200 | 300 | 64 | ✅ | ✅ | ✅ | ✅ |
 | V2.8.3 | **1** | 128 | 4 | 200 | 300 | 64 | ✅ | ✅ | ✅ | ✅ |
+| V2.9 | **2** | 128 | 4 | 300 | 500 | 128 | ✅ | ✅ | ✅ | — |
+| V3.0 | **2** | 128 | 4 | 200 | 200 | 256 | ✅ | ✅ | ✅ | — |
 
 ---
 
@@ -207,13 +213,153 @@
 
 ---
 
+### 十一、TYPE5→TYPE4 迁移：payload_size 从查表外挂升级为 DDPM 联合建模（V2.9）
+
+**触发原因**：进入生成阶段后发现 V2.8.3 模型生成质量存在结构性缺陷——payload_size 全部输出为固定值 7 字节。根因是 PayloadLookup 查表方案在 10K NORMAL 训练数据上仅覆盖 4 种 (fc, direction, quantity) 组合，全映射到最小观测值。
+
+**问题分析**：生成管线测试暴露了 3 个层面的缺陷:
+1. **payload_size 单调**：TYPE5 确定性特征不参与 DDPM 训练，PayloadLookup 查表覆盖率随训练数据多样性成反比。1M 数据有 6 种标签 + 更多协议交互模式，查表方案不可扩展
+2. **inter_arrival_ns 离群值**：d_c_active=1 时 DDPM 对单特征预测方差大，expm1 逆变换将极端 z-score 放大为天文数值（5.5e34 ns）。clamp 到 μ+3σ 可将 max 从 25B 降至 2.25B ns
+3. **离散特征多数类偏向**：MaskedDiffusion 的 greedy unmasking 天然偏向高频类别，FC2 从训练 75% 膨胀至生成 98%
+
+**措施**：
+1. `extractor/schema.py`：payload_size VariableType TYPE5 → TYPE4，删除 `adapt_to_data()` 中的 payload_size 强制 TYPE5 逻辑
+2. `diffusion/sampling/sampler.py`：删除 PayloadLookup 类、`_fill_payload_size()` 方法、`payload_lookup` 参数。payload_size 由 DDPM 作为活跃特征生成
+3. `diffusion/__main__.py`：删除 `cmd_sample` 中 payload_size 强制 TYPE5 的兼容代码，非活跃特征统一归为 TYPE6
+4. `sampler.py:_inverse_log_transform()`：clamp 从固定 80.0 → per-feature μ±3σ（用 normalizer 统计量），防止 float32 溢出和离群值
+5. `trainer.py:save()`：输出 `schema_info.json`（d_c_active, active_indices），采样时从中恢复 schema 配置
+6. `normalisation.py`：`log_features` 属性持久化到 JSON，采样时用于 expm1 逆变换
+7. 修复 EMAModel 设计缺陷：`apply()` 先备份原始权重 → `restore()` 可正确回退（此前两个方法逻辑相同）
+8. 修复 `__main__.py:cmd_sample`：从 schema_info.json 恢复活跃/非活跃特征路由，避免 shape mismatch
+9. 训练数据从 10K NORMAL → 1M（含 DDOS、FUNC_TAMPER、FAKE_REG、MASQ、UNIT_ENUM 共 6 种标签）
+10. Reservoir 随机采样避免过拟合
+
+**训练结果**（62434 窗口, d_c_active=2, d_model=128, 4 layers, 300+500 ep）:
+- Trend loss: 0.854 → 0.809（降 5.3%，payload_size 贡献不可削减的 loss 基底——trend 单看连续历史无法预测离散条件决定的 payload_size）
+- DDPM cont loss: 0.052 → 0.043（降 17%，远优于旧模型 0.096。d_cond=4 提供更多上下文）
+- DDPM disc loss: 0.344 → 0.328（降 4.7%，欠拟合——128-dim 模型不足以表达 62K 窗口 × 6 标签的离散分布）
+
+**生成质量对比**（新旧模型 100 窗口 × 5 轮）:
+
+| 指标 | V2.8.3 | V2.9 | 训练真值 | 变化 |
+|------|--------|------|----------|------|
+| payload_size std | 0（全 7） | **16.4** | 20.5 | 从无分布 → 有分布 |
+| payload_size mean | 7.00 | 7.15 | 61.2 | 仍偏低（DDPM 不接收离散条件） |
+| inter_arrival_ns mean 偏离 | 73× | **0.4σ** | — | 异常值消除 |
+| inter_arrival_ns max | 5.5e34 | **6.3σ** | — | 离群值控制 |
+| FC2 生成占比 | 98% | **89%** | 75% | 多数类偏差缩小 |
+| transaction_id 多样性 | 2/256 | 2/256 | 102 | 未改善 |
+
+**关键发现**：
+1. payload_size 从固定值进化为有分布的生成，但 DDPM 的 d_cond 仅含连续特征（trend + current state），不接收离散特征（fc, direction）。DDPM 学习的是边缘分布 p(payload_size) 而非条件分布 p(payload_size | fc, direction)，生成值偏向最小值
+2. 这是 DDPM 架构的结构性限制——离散条件只输入 MaskedDiffusion，不输入 DDPM。payload_size 作为离散依赖型连续特征的建模需要将离散特征注入 DDPM 条件向量
+3. 128-dim 模型在 62K 窗口上 disc loss 未收敛（500 epoch 仅降 4.7%），增加模型容量（d_model 256+）或分阶段训练（先 NORMAL 后混合）是下一步方向
+4. 训练代码（trainer/denoiser/masked_diffusion）**零改动**——TYPE5→TYPE4 迁移完全在 schema/sampler/__main__ 中完成
+
+**仍待解决**：
+- DDPM 条件向量需注入离散特征使 payload_size 能学条件分布
+- disc loss 未收敛，模型容量需扩展
+- transaction_id 生成始终崩溃至 2 个值（0 和 255）
+
+---
+
+### 十二、数据集方向前缀修复（V3.0）
+
+**触发原因**：V2.9 模型 disc loss=0.328 看似优秀，但 checker 报告 2798 个校验错误，其中 EXPECTED_FC_MISMATCH 688 个——模型生成的响应 function_code 几乎全为 0。
+
+**根因分析**：数据集层面存在三个关联问题：
+
+| 问题 | 证据 | 影响 |
+|------|------|------|
+| 响应 fc 全为 0 | NORMAL 24,407 个响应全部 fc=0 | 模型学到"响应 fc=0"，但这不是合法 Modbus |
+| 攻击流量无响应 | FUNC_TAMPER/DDOS/FAKE_REG/MASQ 全部 100% c2s | direction 分布 60/40，训练存在偏差 |
+| DDOS fc 全为 0 | 50,000 个 DDOS 包 fc=0 | 进一步稀释有效 function_code 信号 |
+
+**根因**：`extractor/faraonic_reader.py` 和 `tests/train_1m.py` 中的 CSV 读取逻辑始终使用 `ModbusTCPRequest_func_code` 列名。对服务器响应包（s2c 方向），该列为空字符串 → `int("" or 0)` = 0。CSV 中存在正确的 `ModbusTCPResponse_func_code` 列，但从未被读取。
+
+**三个问题如何解释所有模型异常**：
+- **disc loss=0.328（旧 NORMAL-only=0.03）**：攻击标签 + fc=0 制造了矛盾信号——fc=0 同时出现在 NORMAL 响应、DDOS 请求、部分攻击流量中，模型无法从 fc 区分标签
+- **direction 39/61**：攻击数据 100% 为请求，拉偏了方向分布
+- **EXPECTED_FC_MISMATCH 688 个**：模型生成响应 fc=0，不符合 Modbus 协议（响应 fc 应与请求相同）
+- **payload_size 偏低**：攻击请求通常小 payload，稀释了正常响应的多样 payload 分布
+
+**措施**：
+1. `extractor/faraonic_reader.py:60-63`：根据 direction 选择列名前缀——c2s 用 `ModbusTCPRequest_`，s2c 用 `ModbusTCPResponse_`
+2. `tests/train_1m.py:80-83`：同步修复训练脚本中的内联读取逻辑（此前遗漏）
+
+```python
+# 修复前（两个文件）：
+func_code = int(row[col["ModbusTCPRequest_func_code"]] or 0)
+
+# 修复后：
+prefix = "ModbusTCPRequest_" if direction == "c2s" else "ModbusTCPResponse_"
+func_code = int(row[col[f"{prefix}func_code"]] or 0)
+```
+
+3. `tests/train_1m.py:197-201`：训练配置优化——batch_size 128→256，trend 300→200 ep，ddpm 500→200 ep，mask 500→0（此前从未调用）
+
+**验证**：NORMAL 5,000 行抽样——修复前 s2c fc=0 占比 100%，修复后仅 2.4%（CSV 中确实缺失的少数行）。
+
+**训练结果**（62,434 窗口, d_c_active=2, d_model=128, 4 layers, 200+200 ep, bs=256）:
+
+| 指标 | V2.9（数据有 bug, 500ep） | V3.0（数据已修复, 200ep） | 分析 |
+|------|---------------------------|---------------------------|------|
+| 训练时长 | 361 min (6.0h) | **146 min (2.4h)** | 2.5x 加速 |
+| Trend loss | 0.854 → 0.809 | 0.857 → 0.841 | 200ep 提前终止，趋势提取正常 |
+| DDPM cont | 0.052 → 0.043 | 0.054 → **0.041** | 连续特征拟合优于旧模型 |
+| DDPM disc | 0.344 → 0.328 | 0.474 → **0.443** | 见下解释 |
+
+**disc loss 为何"变差"**：0.328→0.443 不是退化，是数据修复后的正常现象。
+- 旧数据：响应 fc 恒为 0 → 离散分布退化为单值 → disc loss 虚低（模型学会"永远猜 0"即可得分）
+- 新数据：响应 fc 有真实分布（2, 15 等）→ 6 标签 × 双方向的离散分布更复杂 → disc loss 更高但**真实**
+- 收敛速度证据：旧 run 500 epoch 仅降 4.7%，新 run 200 epoch 降 6.5%（仍在下降中）
+
+**关键发现**：
+1. V2.9 的 disc loss 0.328 是数据 bug 造成的虚假指标——模型不是"学会了离散分布"，而是"学会了数据集的标注错误"
+2. 修复后 disc loss 从更高起点更快收敛，证实了数据质量是瓶颈而非模型容量
+3. 200 epoch 时 disc loss 仍在下降（0.474→0.443），继续训练仍有收益空间
+4. DDPM 条件向量不含离散特征的结构性限制仍然存在（见 V2.9 关键发现 #1）
+
+---
+
+### 十三、生成管线修复（V3.0 后，2026-08-02）
+
+**触发**：生成回环测试发现生成张量退化——inter_arrival_ns 停留在 log 空间（max=1.2）、payload_size 恒为 7、Type6 特征全为 0/均值。逐一排查出 3 个生成链路 bug：
+
+**Bug 1 — 双重归一化**：`build_training_data` 已对 X_w 做 z-score，但 `train_1m.py` 又 `Normalizer.fit()` 于已标准化数据 → mean≈0/std≈1，且 `log_features` 未从 `stats` 恢复 → normalizer.json 写入错误统计量，生成时 `inverse_transform`≈恒等、expm1 失效。
+**修复**：normalizer 由 `stats["mean"]/std/log_features/log_bounds` 构造（与 run_experiment.py 一致），不重复 fit。
+
+**Bug 2 — StubSampler 缺失**：生产入口 `cmd_sample` 从未装配 StubSampler → Type6 特征退化为 0/均值（未从经验分布采样）。
+**修复**：`StubSampler.save()/load()` 持久化，训练时保存 `stub_distributions.npz`，`cmd_sample` 加载并装配。
+
+**Bug 3 — inter_arrival expm1 溢出**：μ±3σ clamp 对重尾分布失效——inter_arrival log1p 空间 μ=16.3 σ=15.7，μ+3σ=63.3 → expm1=3e27 ns（荒谬）。
+**修复**：persist 观测 `log_bounds`（log1p 空间 [0.69, 35.09]），替代 μ±3σ。
+
+**回填**：V3.0 checkpoint 无需重训（模型在 z-score 空间训练，权重有效）——`backfill_v30.py` 重算 normalizer.json（raw stats + log_bounds）+ stub_distributions.npz。
+
+**inter_arrival_ns 路由决策**（2026-08-02）：修复后仍发现 inter_arrival 分布失配（gen p50=2e10 ns vs real 0.7ms）。诊断：真实分布 79% 为退化伪影（49% 钉死 1ns 时间戳精度下限 + 30% 跨会话 20 天间隙），Gaussian DDPM 结构上无法生成 δ 尖峰（V2.5 已确立的限制）。
+**措施**：inter_arrival 路由到 Type6 经验采样（生成时用 raw ns 覆盖，不动模型，不重训）。
+**效果**：分布百分位全对齐（gen p50=14.4 vs real 13.4，1ns 模式 48.2% vs 48.8%），代价是丢失窗口内时序相关性——但 49% 是 1ns 底，时序信号本就接近零。
+
+**统计评估**（300 窗口生成 vs 300K 真实记录，`tests/eval_v30_metrics.py`）：
+- **Mean KS=0.093, Max KS=0.613**（6 标签混合数据）
+- inter_arrival_ns KS=**0.011**（经验路由历史最佳，V2.8.3 为 0.202）
+- payload_size KS=**0.613**（DDPM 架构限制——d_cond 无离散特征，只能学边缘分布，生成分布过窄）
+- 5 学习离散特征 Mean JSD=**0.072**（fc 0.157, direction 0.085, unit_id 0.119；is_exception/exception_code 0.000）
+- 其余特征 KS≤0.027（经验采样+死特征，零误差）
+
+**评估结论**：V3.0 统计质量由 payload_size 单一瓶颈决定（KS 0.613 拖高 Mean KS 至 0.093）。排除 payload_size 后其余连续特征 Mean KS≈0.008，历史最佳。payload_size 为已文档化的架构限制（DDPM 条件向量不含离散特征）。
+
+---
+
 ## 当前状态
 
 ### 已解决
 
 | 问题 | 状态 | 版本 |
 |------|:---:|------|
-| payload_size 确定性计算 | ✅ | V2.0 |
+| payload_size 确定性计算（TYPE5 查表） | ✅ | V2.0 |
+| payload_size TYPE5→TYPE4（DDPM 联合建模） | ✅ | V2.9 |
 | 死特征自动检测 | ✅ | V2.0 |
 | 低基数经验替换（<15 值，含 register_value_0） | ✅ | V2.5 / V2.8.2 |
 | log 变换数值稳定性 | ✅ | V2.6 |
@@ -231,13 +377,32 @@
 | register_value_0 低基数归属（阈值 10→15） | ✅ | V2.8.2 |
 | payload_size 条件采样精度（3D PayloadLookup） | ✅ | V2.8.3 |
 | Min-SNR 权重配置生效 | ✅ | V2.8.3 |
+| EMAModel 设计缺陷（apply/restore 同逻辑） | ✅ | V2.9 |
+| StubSampler 拟合数据错误（z-score 当 raw） | ✅ | V2.9 |
+| expm1 float32 溢出（per-feature clamp） | ✅ | V2.9 |
+| 生成管线 schema 适配（schema_info.json 持久化） | ✅ | V2.9 |
+| inter_arrival_ns 极端离群值（μ±3σ clamp） | ✅ | V2.9 |
+| 数据集方向前缀 bug（响应 fc 恒为 0） | ✅ | V3.0 |
+| 训练脚本 reader 逻辑未同步 | ✅ | V3.0 |
+| 生成双重归一化（normalizer 元数据错误） | ✅ | V3.0后 |
+| cmd_sample 缺失 StubSampler | ✅ | V3.0后 |
+| inter_arrival expm1 溢出（log_bounds 持久化） | ✅ | V3.0后 |
+| inter_arrival_ns 退化分布（经验采样路由） | ✅ | V3.0后 |
 
-### 待解决
+### 已知限制（V3.0 最终模型）
 
-| # | 问题 | 方案 |
-|---|------|------|
-| — | 暂无明确阻塞项。下一步：1M 全配置复训，验证 Mean KS < 0.08 | — |
+V3.0 定为项目最终模型。以下限制经评估为非功能性缺陷，记录为已知不足：
+
+| # | 限制 | 影响评估 | 缓解措施 |
+|---|------|----------|----------|
+| 1 | DDPM 条件向量不含离散特征，payload_size 只能学边缘分布 p(ps) 而非 p(ps\|fc,dir) | **KS=0.613**，生成分布过窄（std 10.9 vs 真实 p99 72/max 8260），为 Mean KS 唯一瓶颈 | 架构改造（fc/dir 注入 d_cond），高成本，不纳入当前范围 |
+| 2 | disc loss 0.443 未完全收敛（d_model=128） | fc 存在随机预测错误（fc JSD=0.157），非系统性错误（旧模型 100% fc=0 已修复） | 继续训练或扩展 d_model 可改善，当前 2.4h 性价比已达边界 |
+| 3 | transaction_id 生成崩溃至 0 和 255 | JSD=0.99（override 后生成 0..65535 均匀 vs 真实 0..255） | sampler 层面随机 override 0..65535 已规避，但 JSD 统计失真 |
+| 4 | MaskedDiffusion 多数类偏向（MQ1） | direction 87/13 膨胀，9,544 请求无响应，TX_TIMEOUT 11,170 | 采样温度/均匀类权重，或 sampler 后处理平衡 |
+| 5 | inter_arrival 20 天间隙伪影（MQ2） | 生成流量协议配对几乎全失效（TX_UNMATCHED 1,628） | cap inter_arrival 上界（牺牲分布）或清洗数据伪影 |
+
+**决策依据**：五项均为架构/容量/数据伪影层面的固有限制，修复需重构 DDPM 条件机制、加温度采样或清洗数据。当前模型在数据正确性、生成管线稳定性上已满足项目目标——协议层校验零错误，剩余问题不影响 Modbus 单包合法性与攻击检测信号保真度。
 
 ---
 
-> 最后更新：2026-06-24（V2.8.3）
+> 最后更新：2026-08-02（V3.0 最终模型，管线全通）

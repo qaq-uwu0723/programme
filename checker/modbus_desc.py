@@ -88,7 +88,7 @@ def _parse_field(
         length = fd.length
         if length is None and fd.length_from:
             length = parsed.get(fd.length_from, 0)
-            if isinstance(length, dict):
+            if not isinstance(length, int):
                 length = 0
         if length is None:
             length = len(data) - offset
@@ -111,7 +111,9 @@ def _parse_field(
     raw = data[offset:end]
 
     if len(raw) < size:
-        return None, len(raw)
+        # Consume the full declared size to preserve field alignment,
+        # even when the PDU is truncated.
+        return None, size
 
     value = int.from_bytes(raw, byteorder="big", signed=ft.value.startswith("i"))
 

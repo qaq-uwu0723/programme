@@ -56,10 +56,11 @@ def read_faraonic_csv(
                 inter_arrival_ns = 50_000_000  # 50ms default
             prev_ts = ts
 
-            # --- Modbus fields ---
-            func_code = int(row[col["ModbusTCPRequest_func_code"]] or 0)
-            unit_id = int(row[col["ModbusTCPRequest_unit_id"]] or 1) % 248
-            txid = int(row[col["ModbusTCPRequest_trans_id"]] or 0) % 65536
+            # --- Modbus fields (use request or response columns based on direction) ---
+            prefix = "ModbusTCPRequest_" if direction == "c2s" else "ModbusTCPResponse_"
+            func_code = int(row[col[f"{prefix}func_code"]] or 0)
+            unit_id = int(row[col[f"{prefix}unit_id"]] or 1) % 248
+            txid = int(row[col[f"{prefix}trans_id"]] or 0) % 65536
 
             # Register address (reference_number)
             ref_cols = [

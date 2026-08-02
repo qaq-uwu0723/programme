@@ -19,10 +19,6 @@ from ..utils.normalisation import Normalizer
 from extractor.schema import FeatureSchema
 
 
-# ---------------------------------------------------------------------------
-# Conditional payload lookup table
-# ---------------------------------------------------------------------------
-
 class StubSampler:
     """Empirical distribution sampler for continuous features unsuitable for DDPM.
 
@@ -30,14 +26,11 @@ class StubSampler:
     sampling from the empirical distribution. Used for:
     - Low-cardinality features (e.g. 3-value setpoints) that Gaussian DDPM cannot model
     - Dead features (std≈0) filled with training mean
-
-    The replacement indices are stored internally and applied independently of
-    the Schema's TypeRouter classification (which controls training, not sampling).
     """
 
     def __init__(self):
-        self._distributions: Dict[int, np.ndarray] = {}  # feature_index → values
-        self._indices: List[int] = []  # features to replace during sampling
+        self._distributions: Dict[int, np.ndarray] = {}
+        self._indices: List[int] = []
 
     def fit(self, X_cont_raw: np.ndarray, stub_indices: List[int]) -> "StubSampler":
         """Store empirical distributions for features to replace post-hoc.
@@ -70,122 +63,20 @@ class StubSampler:
             return torch.from_numpy(samples).float()
         return torch.zeros(shape, dtype=torch.float32)
 
-
-class PayloadLookup:
-    """Conditional payload_size distribution lookup.
-
-    Builds a mapping from (function_code, direction, quantity) → list of payload
-    values observed in the training data. During sampling, for each generated
-    (function_code, direction, quantity), we randomly sample from the
-    corresponding list to produce a realistic payload_size distribution.
-
-    quantity is included because Modbus payload size depends on register count:
-    e.g. FC3 response = 3 + quantity × 2 bytes.
-    """
-
-    def __init__(self):
-        self._table: Dict[Tuple[int, int, int], List[float]] = {}
-
-    def fit(
-        self,
-        X_cont: np.ndarray,
-        Y_disc: np.ndarray,
-        fc_vocab: List[int] = None,
-    ) -> "PayloadLookup":
-        """Build conditional distributions from training data.
-
-        Args:
-            X_cont: (N, d_c) or (N, L, d_c) continuous features (RAW units)
-            Y_disc: (N, d_d) or (N, L, d_d) discrete features (vocabulary indices)
-            fc_vocab: function code vocabulary list
-        """
-        if fc_vocab is None:
-            fc_vocab = [1, 2, 3, 4, 5, 6, 8, 11, 15, 16, 17, 43]
-        if X_cont.ndim == 3:
-            X_cont = X_cont.reshape(-1, X_cont.shape[-1])
-        if Y_disc.ndim == 3:
-            Y_disc = Y_disc.reshape(-1, Y_disc.shape[-1])
-
-        payload_idx = 4   # C_PAYLOAD_SIZE
-        quantity_idx = 6   # C_QUANTITY
-        for i in range(Y_disc.shape[0]):
-            fc_idx = int(Y_disc[i, 0])
-            if fc_idx >= len(fc_vocab):
-                continue
-            fc = fc_vocab[fc_idx]
-            direction = int(Y_disc[i, 1])
-            quantity = int(X_cont[i, quantity_idx])
-            key = (fc, direction, quantity)
-            ps = float(X_cont[i, payload_idx])
-            self._table.setdefault(key, []).append(ps)
-        return self
-
-    def sample(
-        self, fc: torch.Tensor, direction: torch.Tensor, quantity: torch.Tensor
-    ) -> torch.Tensor:
-        """Sample payload_size given function_code, direction, and quantity.
-
-        Args:
-            fc: (B, L) function code values (actual codes, not vocab indices)
-            direction: (B, L) direction (0=c2s, 1=s2c)
-            quantity: (B, L) quantity values (register count)
-
-        Returns:
-            payload: (B, L) sampled payload values in raw units
-        """
-        device = fc.device
-        shape = fc.shape
-        payload = torch.zeros(shape, device=device, dtype=torch.float32)
-
-        unique_keys = set()
-        for b in range(shape[0]):
-            for t in range(shape[1]):
-                key = (
-                    int(fc[b, t].item()),
-                    int(direction[b, t].item()),
-                    int(quantity[b, t].item()),
-                )
-                unique_keys.add(key)
-
-        cache: Dict[Tuple[int, int, int], float] = {}
-        for key in unique_keys:
-            if key in self._table and len(self._table[key]) > 0:
-                cache[key] = float(np.random.choice(self._table[key]))
-            else:
-                # fallback: infer from protocol rules when lookup misses
-                fc_val, direction_val, qty_val = key
-                if not hasattr(self, '_fallback_cache'):
-                    self._fallback_cache = {}
-                if key not in self._fallback_cache:
-                    self._fallback_cache[key] = self._compute_fallback(
-                        fc_val, direction_val, qty_val
-                    )
-                cache[key] = self._fallback_cache[key]
-
-        for b in range(shape[0]):
-            for t in range(shape[1]):
-                key = (
-                    int(fc[b, t].item()),
-                    int(direction[b, t].item()),
-                    int(quantity[b, t].item()),
-                )
-                payload[b, t] = cache[key]
-
-        return payload
+    def save(self, path: str) -> None:
+        """Persist empirical distributions to npz for generation-time reuse."""
+        np.savez(path, **{f"feat_{idx}": self._distributions[idx] for idx in self._indices})
 
     @staticmethod
-    def _compute_fallback(fc: int, direction: int, quantity: int) -> float:
-        """Protocol-aware fallback when no matching sample exists in training data."""
-        if direction == 0:  # request
-            if fc in (1, 2, 3, 4):     return 6.0   # read: MBAP(7) + func(1) + addr(2) + qty(2) = 12 → wait, ADU only
-            if fc in (5, 6):            return 6.0   # write single
-            if fc in (15, 16):          return 7.0 + quantity * 2  # write multiple
-            return 6.0
-        else:  # response
-            if fc in (1, 2, 3, 4):      return 3.0 + quantity * 2  # read response: func(1) + byte_count(1) + regs(qty*2)
-            if fc in (5, 6):            return 6.0   # write single ack
-            if fc in (15, 16):          return 6.0   # write multiple ack
-            return 6.0
+    def load(path: str) -> "StubSampler":
+        """Load empirical distributions saved by save()."""
+        s = StubSampler()
+        data = np.load(path, allow_pickle=False)
+        for key in sorted(data.files, key=lambda k: int(k.split("_")[1])):
+            idx = int(key.split("_")[1])
+            s._distributions[idx] = data[key]
+            s._indices.append(idx)
+        return s
 
 
 class MaskDDPMSampler:
@@ -198,7 +89,6 @@ class MaskDDPMSampler:
         mask_diff: MaskedDiffusion,
         normalizer: Normalizer,
         schema: FeatureSchema,
-        payload_lookup: Optional[PayloadLookup] = None,
         device: torch.device = torch.device("cpu"),
     ):
         self.trend_model = trend_model.to(device).eval()
@@ -206,11 +96,12 @@ class MaskDDPMSampler:
         self.mask_diff = mask_diff.to(device).eval()
         self.normalizer = normalizer
         self.schema = schema
-        self.payload_lookup = payload_lookup
         self.stub_sampler: Optional[StubSampler] = None
         self.device = device
 
         self.L = schema.window_length
+        self._log_indices = list(normalizer.log_features) if hasattr(normalizer, 'log_features') and normalizer.log_features else []
+        self._fc_vocab = schema.discrete[0].vocab if schema.discrete[0].vocab else list(range(256))
 
     @torch.no_grad()
     def generate(
@@ -232,7 +123,7 @@ class MaskDDPMSampler:
         """
         B = num_samples
         device = self.device
-        d_c_active = self.ddpm.d_c  # only DDPM-routed features
+        d_c_active = self.ddpm.d_c
         active_mask = self._get_active_mask(device)
 
         # --- Step 1: Trend rollout (active features only) ---
@@ -255,41 +146,35 @@ class MaskDDPMSampler:
             num_unmask_steps=num_unmask_steps,
         )
 
+        # --- Step 4b: Override transaction_id with random values ---
+        # MaskedDiffusion collapses txid to 1-2 values.
+        # Use wide random txid (0..65535) to minimise cross-window collisions.
+        txid_idx = 3
+        Y_hat[txid_idx] = torch.randint(0, 65536, (B, self.L), device=device)
+
         # --- Step 5: Reconstruct full feature vector (all d_c features) ---
         X_hat_norm_full = self._build_full_tensor(X_active_norm, active_mask, B, self.L, device)
 
-        # --- Step 6: Fill quantity (Type6, needed for payload_size lookup) ---
+        # --- Step 6: Fill quantity (Type6 stub, in z-scored space) ---
         quantity_idx = 6
-        quantity_raw = None
         if self.stub_sampler is not None and quantity_idx in self.stub_sampler._indices:
             shape = (B, self.L)
             quantity_raw = self.stub_sampler.sample(quantity_idx, shape).to(device)
-            # Put quantity into z-scored space for consistency
             mean_q = self.normalizer.mean[quantity_idx]
             std_q = self.normalizer.std[quantity_idx]
             X_hat_norm_full[:, :, quantity_idx] = (quantity_raw.float() - mean_q) / std_q.clamp(min=1e-8)
-        else:
-            # fallback: denormalize whatever is there (DDPM-generated)
-            mean_q = self.normalizer.mean[quantity_idx]
-            std_q = self.normalizer.std[quantity_idx]
-            quantity_raw = X_hat_norm_full[:, :, quantity_idx] * std_q + mean_q
 
-        # --- Step 7: Fill Type5 (payload_size) using (fc, direction, quantity) ---
-        X_hat_norm_full = self._fill_payload_size(
-            X_hat_norm_full, Y_hat, quantity_raw, device
-        )
-
-        # --- Step 8: Denormalize all features together ---
+        # --- Step 7: Denormalize all features together ---
         X_hat = self.normalizer.inverse_transform(X_hat_norm_full)
 
-        # --- Step 9: Fill remaining Type6 stub features (skip quantity = already filled) ---
+        # --- Step 8: Fill remaining Type6 stub features (skip quantity = already filled) ---
         if self.stub_sampler is not None:
             X_hat = self._fill_stub_features(X_hat, device, skip_indices={6})
 
-        # --- Step 9b: Inverse log transform for log1p-compressed features ---
+        # --- Step 9: Inverse log transform for log1p-compressed features ---
         X_hat = self._inverse_log_transform(X_hat)
 
-        # --- Step 9: Clamp to valid ranges ---
+        # --- Step 10: Clamp to valid ranges ---
         for i, spec in enumerate(self.schema.continuous):
             if spec.min_val is not None:
                 X_hat[:, :, i] = torch.clamp(X_hat[:, :, i], min=spec.min_val)
@@ -300,12 +185,21 @@ class MaskDDPMSampler:
 
     def _inverse_log_transform(self, X_hat: torch.Tensor) -> torch.Tensor:
         """Apply expm1 to features that were log1p-transformed before training.
-        Skips features handled by StubSampler (already in raw units)."""
-        log_indices = [3]  # inter_arrival_ns
+        Skips features handled by StubSampler (already in raw units).
+        Clamps input using observed data log-bounds (falls back to μ±3σ if unavailable)
+        to prevent float32 overflow and astronomical values from heavy tails."""
         stub_indices = set(self.stub_sampler._indices) if self.stub_sampler else set()
-        for idx in log_indices:
+        bounds = getattr(self.normalizer, "log_bounds", {})
+        for idx in self._log_indices:
             if idx not in stub_indices:
-                X_hat[:, :, idx] = torch.expm1(X_hat[:, :, idx])
+                if idx in bounds:
+                    min_log, max_log = bounds[idx]
+                else:
+                    log_mean = float(self.normalizer.mean[idx])
+                    log_std = float(self.normalizer.std[idx])
+                    max_log = log_mean + 3.0 * log_std
+                    min_log = max(log_mean - 3.0 * log_std, 0.0)
+                X_hat[:, :, idx] = torch.expm1(X_hat[:, :, idx].clamp(min=min_log, max=max_log))
         return X_hat
 
     def _fill_stub_features(self, X_hat: torch.Tensor, device: torch.device,
@@ -346,34 +240,6 @@ class MaskDDPMSampler:
                 active_idx += 1
         return X_full
 
-    def _fill_payload_size(
-        self, X_hat: torch.Tensor, Y_hat: List[torch.Tensor],
-        quantity: torch.Tensor, device: torch.device,
-    ) -> torch.Tensor:
-        """Overwrite payload_size (index 4) using conditional sampling.
-
-        Samples from the empirical distribution of payload_size conditioned on
-        (function_code, direction, quantity). quantity is pre-filled from
-        StubSampler to ensure consistency with the protocol."""
-        FC_VOCAB = [1, 2, 3, 4, 5, 6, 8, 11, 15, 16, 17, 43]
-        func_idx = Y_hat[0].long()
-        fc = torch.tensor(FC_VOCAB, device=device)[func_idx.clamp(0, 11)]
-        direction = Y_hat[1]
-
-        if self.payload_lookup is not None:
-            payload_raw = self.payload_lookup.sample(fc, direction, quantity)
-        else:
-            is_request = (direction == 0)
-            payload_raw = torch.full_like(fc, 12.0, dtype=torch.float32)
-            payload_raw = torch.where((fc == 3) & ~is_request, 28.0, payload_raw)
-            payload_raw = torch.where((fc == 16) & is_request, 15.0, payload_raw)
-
-        # Convert to z-scored space to match other features
-        mean_ps = self.normalizer.mean[4]
-        std_ps = self.normalizer.std[4].clamp(min=1e-8)
-        X_hat[:, :, 4] = (payload_raw - mean_ps) / std_ps
-        return X_hat
-
 
 @torch.no_grad()
 def generate_long_sequence(
@@ -409,11 +275,10 @@ def generate_long_sequence(
         Y_parts[j].append(y1[j])
 
     steps_generated = L
-    current_seed = x1[:, -overlap:, :]  # last `overlap` steps as seed
+    current_seed = x1[:, -overlap:, :]
 
     while steps_generated < total_steps:
         x_w, y_w = sampler.generate(num_samples=1, seed_seq=current_seed)
-        # Drop the seed portion (already covered by overlap)
         X_parts.append(x_w[:, overlap:, :])
         for j in range(d_d):
             Y_parts[j].append(y_w[j][:, overlap:])

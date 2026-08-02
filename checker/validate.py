@@ -32,6 +32,7 @@ def validate(
     report = Report()
     state = CheckerState()
     packet_count = 0
+    last_ts_ns = 0
 
     for pcap_index, raw_pkt, meta, decoded, error in iter_aligned(pcap_path, meta_path):
         packet_count += 1
@@ -39,6 +40,7 @@ def validate(
         flow_dict: Dict = {}
         if meta is not None:
             flow_dict = meta.flow.to_dict()
+            last_ts_ns = max(last_ts_ns, meta.ts_ns)
 
         # --- Step 0–1: alignment errors ---
         if error is not None:
@@ -53,7 +55,8 @@ def validate(
             continue
 
         # Both decoded and meta are non-None after this point
-        assert decoded is not None and meta is not None
+        if decoded is None or meta is None:
+            raise RuntimeError("internal: decoded/meta missing after alignment")
 
         # Use actual decoded src/dst for accurate flow reporting
         flow_dict = {
@@ -150,6 +153,10 @@ def validate(
         timeout_findings = _check_timeouts(state, meta.ts_ns)
         for f in timeout_findings:
             report.add_finding(f)
+
+    # --- final timeout sweep: flush residual outstanding requests ---
+    for f in _check_timeouts(state, last_ts_ns + state.timeout_ns + 1):
+        report.add_finding(f)
 
     report.summary.total_packets = packet_count
     return report
@@ -373,7 +380,7 @@ def _check_expected(
         ))
 
     if emb.function_code is not None:
-        if not adu.is_exception and emb.function_code != adu.function_code:
+        if emb.function_code != adu.function_code:
             findings.append(Finding(
                 pcap_index=pcap_index, event_id=meta.event_id, flow=flow,
                 severity=Severity.ERROR,
@@ -387,7 +394,16 @@ def _check_expected(
         parsed = adu.parsed_fields.get("fields", {})
         for field_name, expected_val in exp.fields.items():
             actual_val = parsed.get(field_name)
-            if actual_val is not None and actual_val != expected_val:
+            if actual_val is None:
+                findings.append(Finding(
+                    pcap_index=pcap_index, event_id=meta.event_id, flow=flow,
+                    severity=Severity.WARN,
+                    code="EXPECTED_FIELD_MISSING",
+                    message=f"Expected field '{field_name}' not present in parsed PDU",
+                    observed={field_name: None},
+                    expected={field_name: expected_val},
+                ))
+            elif actual_val != expected_val:
                 findings.append(Finding(
                     pcap_index=pcap_index, event_id=meta.event_id, flow=flow,
                     severity=Severity.WARN,

@@ -6,6 +6,7 @@ Architecture: input proj → timestep embedding inject → condition inject →
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class SinusoidalTimeEmbedding(nn.Module):
@@ -33,9 +34,6 @@ class SinusoidalTimeEmbedding(nn.Module):
         if self.d_model % 2 == 1:
             emb = F.pad(emb, (0, 1))
         return emb
-
-
-import torch.nn.functional as F
 
 
 class TransformerDenoiser(nn.Module):

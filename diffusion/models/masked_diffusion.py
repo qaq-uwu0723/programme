@@ -190,7 +190,7 @@ class MaskedDiffusion(nn.Module):
             cond = s_cond
 
         # Reverse steps: map k_rev ∈ [0, num_unmask_steps) → actual K steps
-        step_indices = torch.linspace(self.K - 1, 0, num_unmask_steps, dtype=torch.long)
+        step_indices = torch.linspace(self.K - 1, 0, num_unmask_steps, dtype=torch.float).long()
 
         for step_idx in range(num_unmask_steps):
             k = step_indices[step_idx]

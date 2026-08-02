@@ -81,9 +81,7 @@ class FeatureSchema:
                 name=spec.name, kind=spec.kind, var_type=spec.var_type,
                 vocab=spec.vocab, min_val=spec.min_val, max_val=spec.max_val,
             )
-            if spec.name == "payload_size":
-                new_spec.var_type = VariableType.TYPE5  # permanent: deterministic
-            elif spec.kind == FeatureKind.CONTINUOUS and spec.var_type == VariableType.TYPE4:
+            if spec.kind == FeatureKind.CONTINUOUS and spec.var_type == VariableType.TYPE4:
                 if stds[i] < dead_threshold:
                     new_spec.var_type = VariableType.TYPE6  # dead → stub
                 elif cardinality[i] < 15:
@@ -107,7 +105,7 @@ class FeatureSchema:
                 FeatureSpec("register_value_2", FeatureKind.CONTINUOUS, VariableType.TYPE4),
                 FeatureSpec("inter_arrival_ns", FeatureKind.CONTINUOUS, VariableType.TYPE4,
                             min_val=0),
-                FeatureSpec("payload_size", FeatureKind.CONTINUOUS, VariableType.TYPE5,  # deterministic
+                FeatureSpec("payload_size", FeatureKind.CONTINUOUS, VariableType.TYPE4,
                             min_val=7),
                 FeatureSpec("register_address", FeatureKind.CONTINUOUS, VariableType.TYPE4,
                             min_val=0, max_val=65535),
