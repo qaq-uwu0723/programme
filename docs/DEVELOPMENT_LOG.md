@@ -371,6 +371,32 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 
 ---
 
+### [2026-08-03] V3.1 — 1.5M 足量训练
+
+**配置**：FARAONIC 1.5M 行（reservoir）→ 93,656 窗口，trend 150ep + ddpm 150ep，bs=256。目的：更多数据 + 更少 epoch 控制训练时长。
+
+**训练结果**（138.3 min，比 V3.0 的 146 min 更快）：
+
+| 指标 | V3.0 (1M, 200+200ep) | V3.1 (1.5M, 150+150ep) | 变化 |
+|------|----------------------|------------------------|------|
+| Trend 起始/结束 | 0.857 → 0.841 | 0.818 → **0.808** | 起始更低，收敛更好 |
+| DDPM cont | 0.041 | **0.033** | -0.008 |
+| DDPM disc | 0.443 | **0.383** | -0.060（-13.5%）|
+
+**统计评估**：
+- **payload_size KS 0.613 → 0.426**（-31%）——1.5M 数据显著缓解原 #1 架构限制
+- Mean KS 0.163 → **0.132**
+- fc JSD 0.018 → 0.071（⚠️ 略退化——过度自信偏向众数）；direction JSD → 0.0007（改善）
+- inter_arrival KS 0.49（MQ2 取舍不变）；checker **0 findings**（协议有效保持）
+
+**发现并修复的 bug**：`train_1m.py` stub 拟合用反归一化窗口（浮点噪声 `2.29e-09` vs 精确 `0`）→ reg_val_0 KS 虚高 0.808。改用 `packet_to_features` 原始特征（精确整数），重新生成 stub（不重训），KS 修复至 0.0016。
+
+**结论**：V3.1 为当前最佳模型——连续瓶颈显著改善，协议有效性保持完美。
+
+**全流程验证**（V3.1，120 窗口）：生成 15,360 包 → 组装 17,040 包（+1,680 注入配对响应）→ 校验 **0 findings** → 评估 Mean KS=0.132 / Mean JSD=0.0209。生产路径端到端跑通。
+
+---
+
 ## 三、当前状态
 
 ### 已完成
@@ -408,13 +434,15 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 - [x] MQ2 inter_arrival 会话间隙（排除 >1s 伪影）——V3.0 后
 - [x] 陈旧 PayloadLookup 脚本清理 + .gitignore——V3.0 后
 - [x] V3.0 最终评估（Mean KS=0.163, JSD=0.0045, checker 0 findings）——V3.0 后
+- [x] V3.1 1.5M 足量训练（payload KS 0.613→0.426，checker 0 findings）——V3.1
+- [x] train_1m stub 拟合精确化（修复 reg_val_0 KS 虚高 0.808）——V3.1
 
 ### 待解决
 
 | # | 问题 | 方案 |
 |---|------|------|
-| 1 | DDPM 条件向量不含离散特征，payload_size 只能学边缘分布（KS=0.613） | 将 fc/direction 注入 DDPM 的 d_cond（架构改造，不纳入当前范围） |
-| 2 | disc loss 0.443 未完全收敛（d_model=128 欠拟合） | 扩展 d_model 256/512 或继续训练；数据修复后收敛已改善（6.5%/200ep vs 4.7%/500ep） |
+| 1 | DDPM 条件向量不含离散特征，payload_size 只能学边缘分布（KS=0.426，1.5M 已缓解） | 将 fc/direction 注入 DDPM 的 d_cond（架构改造，不纳入当前范围） |
+| 2 | disc loss 0.383 未完全收敛（d_model=128 欠拟合）；fc JSD 0.071 略退化 | 扩展 d_model 256/512 或继续训练；温度微调平衡离散保真 |
 | 3 | transaction_id 生成崩溃至 0 和 255（JSD 统计失真） | sampler 层面随机 override 0..65535 已规避；彻底解决需评估 MaskedDiffusion 均匀类权重 |
 | 4 | inter_arrival 会话间隙排除取舍（KS=0.49） | 换取协议配对完美（checker 0 findings）；真实亚秒级间隔保留 |
 
@@ -424,7 +452,7 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 
 | 用途 | 路径 |
 |------|------|
-| 训练入口（1M 主脚本） | `tests/train_1m.py` |
+| 训练入口（1M/1.5M 主脚本） | `tests/train_1m.py` |
 | 训练编排 | `diffusion/training/trainer.py` |
 | 监控面板 | `experiments/monitor_v2.py` |
 | 采样/生成 | `diffusion/sampling/sampler.py` |
@@ -440,14 +468,14 @@ ICS 网络安全研究面临训练数据不足的瓶颈——真实 ICS 网络�
 ### 最常用命令
 
 ```bash
-# 训练（1M，6 标签，~2.4h）
+# 训练（1.5M 行，6 标签，~2.3h）
 .venv/Scripts/python.exe tests/train_1m.py
 
 # 监控
 python experiments/monitor_v2.py
 
-# 生成（张量）
-python -m diffusion sample --model checkpoints/exp_1m_type4/ --output generated/ --num-windows 20
+# 生成（张量，--temperature 1.0）
+python -m diffusion sample --model checkpoints/exp_15m_type4/ --output generated/ --num-windows 20
 
 # 打包（张量 → PCAP + JSONL）
 python -m assembler --data generated/ --output traces/
@@ -459,11 +487,11 @@ python -m checker traces/
 ### 硬件甜点配置
 
 - GPU: RTX 3060 Laptop (6GB VRAM)
-- batch_size=256, d_model=128, trend 200ep + ddpm 200ep
+- batch_size=256, d_model=128, trend 150ep + ddpm 150ep（V3.1，1.5M 数据）
 - 显存策略：全量数据 CPU + 每 epoch empty_cache
 - 显存占用：1.7-2.1 GB (28-35%)
 
 ---
 
-> 最后更新：2026-08-02  
-> 版本：V3.0（最终模型，管线校验全通）
+> 最后更新：2026-08-03  
+> 版本：V3.1（最终模型，1.5M，checker 0 findings）

@@ -14,17 +14,26 @@ env/
 .vscode/
 *.swp
 
-# Data / checkpoints / outputs (large, regenerable)
-checkpoints/
+# Data / large outputs (regenerable)
 dataset/
 generated/
 traces/
 output/
+tests/outputs/
+
+# Research papers / design notes / paper summaries (not part of the repo)
+docs/papers/
+docs/design/
+docs/paper_summaries/
+
+# Claude session files
+CLAUDE.md
+SESSION_RESUME.md
 
 # OS
 .DS_Store
 Thumbs.db
 
-# Reports
+# Reports / logs
 *.log
 eval_report.json

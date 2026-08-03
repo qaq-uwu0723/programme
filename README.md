@@ -38,14 +38,14 @@ PCAP/CSV → Extractor → Diffusion Model → Assembler → Checker
 
 ```bash
 python experiments/monitor_v2.py                                    # 自动找最新 log
-python experiments/monitor_v2.py checkpoints/exp_1m_type4/training.log   # 指定 log
+python experiments/monitor_v2.py checkpoints/exp_15m_type4/training.log   # 指定 log
 ```
 
 ### 生成 & 校验
 
 ```bash
 # 生成（扩散输出 → 特征张量）
-python -m diffusion sample --model checkpoints/exp_1m_type4/ --output generated/ --num-windows 100 --temperature 1.0
+python -m diffusion sample --model checkpoints/exp_15m_type4/ --output generated/ --num-windows 100 --temperature 1.0
 
 # 打包（张量 → PCAP + JSONL，自动注入响应保证请求-响应配对）
 python -m assembler --data generated/ --output traces/
